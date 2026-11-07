@@ -33,6 +33,7 @@ class CandidateReport(BaseModel):
     batch_id: str
     questions: dict[str, CandidateQuestion]
     pairs: list[CandidatePair]
+    existing_ids: dict[int, str] | None = None
 
 
 class Decision(BaseModel):
@@ -66,9 +67,12 @@ class ReviewJob:
             seen.add(key)
 
         # A changed candidate set must never inherit decisions for positional pair IDs.
-        report_json = stable_json(self.report.model_dump(
+        report_data = self.report.model_dump(
             mode="json", exclude_none=self.report.schema_version == 1,
-        ))
+        )
+        if self.report.existing_ids is None:
+            report_data.pop("existing_ids", None)
+        report_json = stable_json(report_data)
         self.job_id = hashlib.sha256(report_json.encode("utf-8")).hexdigest()
         self.db_path = db_path
         if read_only:

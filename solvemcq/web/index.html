@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SolveMCQ · Question Review</title>
+<style>
+:root{color-scheme:light;--ink:#17263a;--muted:#4a5b70;--line:#d7e0ea;--navy:#16273e;--blue:#154aa0;--paper:#fff;--bg:#f3f6fa;--green:#155b46;--pale:#eaf5ef}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 system-ui,-apple-system,sans-serif}
+header{background:var(--navy);color:white} .bar,main{max-width:1050px;margin:auto;padding:20px 26px}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:12px}.brand{font-size:21px;font-weight:800}.local{font-size:14px;color:#d5e4f8}
+main{padding-top:38px;padding-bottom:48px} h1,h2,h3,p{margin:0} h1{font-size:clamp(30px,5vw,48px);line-height:1.15;letter-spacing:-.045em;margin:10px 0}
+h2{font-size:27px;line-height:1.25;letter-spacing:-.02em} h3{font-size:15px;color:var(--muted);margin-bottom:8px}.sub{color:var(--muted);margin-top:7px}
+.steps{display:flex;gap:8px;flex-wrap:wrap;margin:24px 0 20px;padding:0;list-style:none}.steps li{background:#e7edf5;color:#344962;padding:5px 13px;border-radius:20px;font-size:14px;font-weight:650}
+.steps li[aria-current]{background:var(--blue);color:white}
+.panel{background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:24px;margin-top:16px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.files,.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;margin:18px 0}
+.file,.question{display:block;border:1px solid var(--line);border-radius:12px;padding:16px;background:#fafcff;min-width:0;overflow-wrap:anywhere}
+label{font-weight:700} label small,.file p{display:block;font-weight:400;color:var(--muted);font-size:15px}
+input[type=file]{font:inherit;font-size:15px;display:block;width:100%;margin-top:12px}
+input::file-selector-button{font:inherit;font-weight:700;border:1px solid #a7b8ce;background:white;color:var(--blue);border-radius:8px;padding:8px 10px;margin-right:8px;cursor:pointer}
+input[type=text]{font:inherit;border:1px solid #a7b8ce;border-radius:8px;padding:8px 10px;display:block;width:min(100%,450px);margin:7px 0}
+button,.button{display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:9px 16px;border:1px solid #a7b8ce;border-radius:9px;background:white;color:var(--blue);font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}
+.primary{background:var(--blue);color:white;border-color:var(--blue)}button:disabled{opacity:.55;cursor:wait}button:hover:not(:disabled),.button:hover{filter:brightness(.93)}
+button[aria-pressed="true"]{background:#e7effd;border-color:#8ca8d2}
+:focus-visible{outline:3px solid #226bd0;outline-offset:3px}
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}details{margin:14px 0}summary{cursor:pointer;font-weight:650;color:var(--blue)}
+.notice{padding:12px 14px;border-radius:9px;background:#eef3fb;color:#233d60;margin-top:12px}.error{background:#fff0ed;color:#8a261c}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.stat{padding:11px;border-radius:9px;background:#edf2f8;font-size:14px;color:var(--muted)}.stat strong{font-size:25px;line-height:1.2;display:block;color:var(--ink)}
+progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--blue)}.answer{color:var(--green);background:var(--pale);border-radius:8px;padding:8px 10px;margin-top:12px;font-weight:650}.question ol{padding-left:23px;margin-bottom:4px}
+.question p{font-size:20px;line-height:1.45;font-weight:650}.result{margin-top:14px} [hidden]{display:none!important}
+@media(max-width:620px){.bar,main{padding-left:16px;padding-right:16px}.panel{padding:16px}.files,.pair{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<header><div class="bar"><div class="brand">SolveMCQ</div><div class="local">Local question review</div></div></header>
+<main>
+  <h1>Find duplicate questions</h1>
+  <p class="sub">Choose a JSON file, compare questions side by side, and download the result.</p>
+  <ol class="steps" aria-label="Workflow"><li id="step-files">1. Choose files</li><li id="step-review">2. Review matches</li><li id="step-export">3. Download results</li></ol>
+  <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+
+  <section id="setup" class="panel" aria-labelledby="setup-title">
+    <h2 id="setup-title">Choose your files</h2>
+    <form id="files-form">
+      <div class="files">
+        <label class="file">Questions to check <small>Required · JSON file</small>
+          <input id="source" type="file" accept=".json,application/json" required>
+        </label>
+        <label class="file">Existing question bank <small>Optional · MongoDB JSON export</small>
+          <input id="bank" type="file" accept=".json,application/json">
+        </label>
+      </div>
+      <details><summary>Subject settings</summary>
+        <label for="subject">Subject ID for questions without a subject</label>
+        <input id="subject" type="text">
+        <p class="sub">Leave blank if the questions already have a subject or the bank has only one subject.</p>
+      </details>
+      <button class="primary" type="submit">Find similar questions</button>
+    </form>
+  </section>
+
+  <section id="review" class="panel" aria-labelledby="review-title" hidden>
+    <div class="row"><h2 id="review-title" tabindex="-1">Review matches</h2><button id="new" type="button">Start another batch</button></div>
+    <div class="stats" id="stats"></div>
+    <progress id="progress" max="1" value="0" aria-label="Pairs reviewed"></progress>
+    <p class="sub" id="scan-summary"></p>
+    <div class="actions" aria-label="Review list">
+      <button id="pending" type="button" aria-pressed="true">To review</button>
+      <button id="deferred" type="button" aria-pressed="false">Set-aside pairs</button>
+    </div>
+    <p id="pair-status" class="sub" aria-live="polite"></p>
+    <div id="pair-area" hidden>
+      <div id="pair" class="pair"></div>
+      <div class="actions" id="pair-actions"></div>
+      <details id="reason-details"><summary>Add a note (optional)</summary>
+        <label for="reason">Reason for this decision</label>
+        <input id="reason" type="text" maxlength="1000">
+      </details>
+    </div>
+  </section>
+
+  <section id="results" class="panel" aria-labelledby="results-title" hidden>
+    <h2 id="results-title">Download results</h2>
+    <p class="sub">Questions still under review and questions already in your bank are held out of the ready file.</p>
+    <div class="actions"><button type="button" id="export" class="primary">Prepare downloads</button></div>
+    <div id="downloads" class="result" aria-live="polite"></div>
+  </section>
+</main>
+<script>
+"use strict";
+const token = "__LOCAL_TOKEN__";
+const $ = id => document.getElementById(id);
+let state = {};
+let queue = "pending";
+let busy = false;
+
+function node(tag, text, className) {
+  const element = document.createElement(tag);
+  if (text !== undefined) element.textContent = text;
+  if (className) element.className = className;
+  return element;
+}
+
+async function api(path, data) {
+  const response = await fetch("/api/" + path, data === undefined ? {} : {
+    method: "POST", headers: {"Content-Type": "application/json", "X-SolveMCQ-Token": token},
+    body: JSON.stringify(data)
+  });
+  const value = await response.json();
+  if (!response.ok) throw Error(value.error);
+  return value;
+}
+
+function notice(text, error = false) {
+  $("notice").textContent = text;
+  $("notice").hidden = !text;
+  $("notice").classList.toggle("error", error);
+}
+
+function button(text, action, primary = false) {
+  const element = node("button", text, primary ? "primary" : "");
+  element.type = "button";
+  element.addEventListener("click", action);
+  return element;
+}
+
+function render() {
+  const ready = state.status === "ready";
+  $("setup").hidden = ready || state.status === "running";
+  $("review").hidden = $("results").hidden = !ready;
+  document.querySelectorAll(".steps li").forEach(item => item.removeAttribute("aria-current"));
+  $(ready ? (state.export ? "step-export" : "step-review") : "step-files").setAttribute("aria-current", "step");
+  notice(state.message || "", state.status === "error");
+  if (!ready) return;
+  const r = state.review;
+  $("stats").replaceChildren(...[
+    ["To review", r.pending], ["Same question", r.duplicates],
+    ["Different", r.distinct], ["Set aside", r.needs_review]
+  ].map(([label, count]) => {
+    const item = node("div", undefined, "stat");
+    item.append(node("strong", count), label);
+    return item;
+  }));
+  $("progress").max = r.candidate_pairs || 1;
+  $("progress").value = r.candidate_pairs ? r.candidate_pairs - r.pending : 1;
+  const scan = state.scan;
+  $("scan-summary").textContent = `${scan.input_questions} questions checked · ${scan.exact_duplicates} exact repeats` +
+    (scan.bank ? ` · ${scan.already_in_bank} IDs already in the bank` : "");
+  const downloads = $("downloads");
+  downloads.replaceChildren();
+  if (state.export) {
+    const summary = state.export.summary;
+    downloads.append(node("p", `${summary.import_ready_questions} questions ready · ${summary.held_questions} held back`));
+    const links = node("div", undefined, "actions");
+    for (const [file, label] of [
+      ["import_ready.json", "Download ready questions"], ["duplicates.json", "Duplicates"],
+      ["unresolved.json", "Still to review"], ["already_in_bank.json", "Already in bank"], ["summary.json", "Summary"]
+    ]) {
+      if (file === "already_in_bank.json" && !state.scan.bank) continue;
+      const link = node("a", label, file === "import_ready.json" ? "button primary" : "button");
+      link.href = "/api/download?" + new URLSearchParams({job: state.id, file});
+      link.download = file;
+      links.append(link);
+    }
+    downloads.append(links);
+  }
+}
+
+async function showPair() {
+  $("pending").setAttribute("aria-pressed", queue === "pending");
+  $("deferred").setAttribute("aria-pressed", queue === "needs_review");
+  $("pair-area").hidden = true;
+  $("reason").value = "";
+  $("reason-details").open = false;
+  const pair = await api("pair?" + new URLSearchParams({job: state.id, queue}));
+  if (!pair) {
+    $("pair-status").textContent = queue === "pending"
+      ? "No pairs are waiting for a first review."
+      : "No pairs have been set aside.";
+    return;
+  }
+  $("pair-status").textContent = `Pair ${pair.pair_id} of ${state.review.candidate_pairs}` +
+    (pair.previous_reason ? ` · ${pair.previous_reason}` : "");
+  $("pair-area").hidden = false;
+  $("pair").replaceChildren();
+  const actions = $("pair-actions");
+  actions.replaceChildren();
+  const existing = pair.questions.some(question => question.mongo_id);
+  for (const [index, question] of pair.questions.entries()) {
+    const card = node("article", undefined, "question");
+    const letter = index ? "B" : "A";
+    card.append(node("h3", `Question ${letter} · ${question.mongo_id ? "Existing bank" : "Uploaded file"}`),
+                node("p", question.question));
+    if (question.options.length) {
+      const choices = node("details");
+      choices.append(node("summary", "Show answer choices"));
+      const options = node("ol");
+      for (const option of question.options) options.append(node("li", `${option.key}. ${option.text}`));
+      choices.append(options);
+      card.append(choices);
+    }
+    card.append(node("div", "Answer: " + question.answer, "answer"));
+    $("pair").append(card);
+    if (!existing || question.mongo_id) {
+      actions.append(button(question.mongo_id ? "Same — keep bank question" : `Same — keep ${letter}`,
+        () => save(pair.pair_id, "duplicate", question.question_id), true));
+    }
+  }
+  actions.append(button("Different questions", () => save(pair.pair_id, "distinct")));
+  if (queue === "pending") actions.append(button("Set aside for later", () => save(pair.pair_id, "needs_review")));
+}
+
+async function attempt(action) {
+  if (busy) return;
+  busy = true;
+  for (const control of document.querySelectorAll("button")) control.disabled = true;
+  try {
+    await action();
+  } catch (error) {
+    notice(error.message, true);
+  } finally {
+    busy = false;
+    for (const control of document.querySelectorAll("button")) control.disabled = false;
+  }
+}
+
+function save(pair_id, verdict, keep_question_id) {
+  return attempt(async () => {
+    state = await api("decide", {job: state.id, pair_id, verdict, keep_question_id, reason: $("reason").value});
+    render();
+    await showPair();
+  });
+}
+
+async function refresh() {
+  state = await api("state");
+  render();
+  if (state.status === "running") setTimeout(() => attempt(refresh), 1500);
+  if (state.status === "ready") await showPair();
+}
+
+$("files-form").addEventListener("submit", event => {
+  event.preventDefault();
+  attempt(async () => {
+    const source = $("source").files[0];
+    const bank = $("bank").files[0];
+    state = await api("start", {
+      source: await source.text(), bank: bank ? await bank.text() : "", subject: $("subject").value
+    });
+    queue = "pending";
+    await refresh();
+  });
+});
+$("pending").onclick = () => attempt(async () => { queue = "pending"; await showPair(); });
+$("deferred").onclick = () => attempt(async () => { queue = "needs_review"; await showPair(); });
+$("export").onclick = () => attempt(async () => { state = await api("export", {job: state.id}); render(); });
+$("new").onclick = () => {
+  $("setup").hidden = false;
+  $("review").hidden = $("results").hidden = true;
+  $("files-form").reset();
+  $("step-files").setAttribute("aria-current", "step");
+  $("step-review").removeAttribute("aria-current");
+  $("step-export").removeAttribute("aria-current");
+  $("source").focus();
+};
+attempt(refresh);
+</script>
+</body>
+</html>

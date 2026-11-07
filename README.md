@@ -166,3 +166,28 @@ solvemcq-finalize incoming.json output/incoming/review_candidates.json \
 pending and blocked cases. Cross-bank duplicates link to the existing MongoDB
 ID in `duplicates.json`. Import separately through your normal app workflow
 after reviewing the files. The pipeline itself makes no MongoDB writes.
+
+## Browser app
+
+Install once in your existing project environment:
+
+```sh
+python -m pip install -e '.[embeddings,review,bank]'
+```
+
+On macOS, double-click **Open-SolveMCQ.command** in Finder. You can also start
+the app with `solvemcq-ui` and open `http://127.0.0.1:8766` on the same computer.
+
+1. Choose the incoming MCQ JSON. Optionally select a MongoDB Extended JSON
+   export as the question bank. The app reads that export directly.
+2. Click **Find similar questions**. The first search can take several minutes
+   while BGE-M3 downloads and loads.
+3. Review the two questions side by side. Choose which to keep if they are the
+   same, mark them different, or set the pair aside.
+4. Click **Prepare downloads** and download the ready questions. Deferred and
+   pending questions, blocked groups, and matching bank IDs stay out of this file.
+
+The browser app saves the current job and decisions under
+`.solvemcq/browser`. Use a single running app per data directory. The browser
+offers manual review. The existing Codex MCP review flow remains available
+through the CLI for AI-assisted review.

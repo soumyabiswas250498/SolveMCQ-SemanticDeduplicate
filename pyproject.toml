@@ -18,6 +18,10 @@ solvemcq = "solvemcq.cli:main"
 solvemcq-review = "solvemcq.review_server:main"
 solvemcq-finalize = "solvemcq.finalize:main"
 solvemcq-bank = "solvemcq.bank:main"
+solvemcq-ui = "solvemcq.ui:main"
 
 [tool.setuptools.packages.find]
 include = ["solvemcq*"]
+
+[tool.setuptools.package-data]
+solvemcq = ["web/*.html"]

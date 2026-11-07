@@ -18,24 +18,39 @@ def bank_collection(name):
     return f"solvemcq_bank_bge_m3_v1_{name}"
 
 
+EXCLUDED_STATUSES = ("archived", "inactive")
+
+
 def read_bank(collection):
-    from bson import ObjectId
     from pymongo import ASCENDING
 
-    questions = []
-    metadata = {}
     projection = dict.fromkeys((
         "_id", "subjectId", "subject", "questionText", "question", "options",
         "correctOptionKey", "correctAnswer", "answer",
     ), 1)
-    query = {"deletedAt": None, "operationalStatus": {"$nin": ["archived", "inactive"]}}
-    for row, document in enumerate(collection.find(query, projection).sort("_id", ASCENDING), 1):
-        mongo_id = document.pop("_id")
+    query = {"deletedAt": None, "operationalStatus": {"$nin": list(EXCLUDED_STATUSES)}}
+    return read_bank_documents(collection.find(query, projection).sort("_id", ASCENDING), collection.full_name)
+
+
+def read_bank_documents(documents, namespace):
+    from bson import ObjectId
+
+    questions = []
+    metadata = {}
+    for row, original in enumerate(documents, 1):
+        if not isinstance(original, dict):
+            raise ValueError(f"Bank row {row}: expected an object")
+        if original.get("deletedAt") is not None or original.get("operationalStatus") in EXCLUDED_STATUSES:
+            continue
+        document = dict(original)
+        mongo_id = document.pop("_id", None)
         try:
             if not isinstance(mongo_id, (ObjectId, str)):
                 raise ValueError("expected a string or ObjectId _id")
             source = {"mongo_id": str(mongo_id), "mongo_id_type": type(mongo_id).__name__}
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{collection.full_name}:{stable_json(source)}"))
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{namespace}:{stable_json(source)}"))
+            if point_id in metadata:
+                raise ValueError("duplicate _id in bank")
             if isinstance(document.get("subjectId"), ObjectId):
                 document["subjectId"] = str(document["subjectId"])
             question = parse_question(document, row, None, point_id)
@@ -87,6 +102,7 @@ def compare_bank(client, batch_collection, name, questions, top_k, threshold):
             )]),
         ).count
     ]
+    known_rows = find_existing_rows(client, collection, questions)
     pairs = []
     bank_questions = {}
     for question in questions:
@@ -102,7 +118,36 @@ def compare_bank(client, batch_collection, name, questions, top_k, threshold):
             pairs.append(candidate_pair(
                 (question.id, hit.id), question.answer, item["answer"], vectors["answer"], hit,
             ))
-    return pairs, bank_questions, missing_subjects
+    return pairs, bank_questions, missing_subjects, known_rows
+
+
+def find_existing_rows(client, collection, questions):
+    string_rows = {}
+    object_rows = {}
+    for question in questions:
+        identifier = question.record.get("_id", question.record.get("id"))
+        if isinstance(identifier, dict):
+            identifier = identifier.get("$oid")
+        if isinstance(identifier, str) and identifier:
+            string_rows.setdefault(identifier, []).append(question.row)
+            if re.fullmatch(r"[0-9a-fA-F]{24}", identifier):
+                object_rows.setdefault(identifier.lower(), []).append(question.row)
+
+    known = {}
+    offset = None
+    while string_rows:
+        points, offset = client.scroll(
+            collection, offset=offset, limit=256,
+            with_payload=["mongo_id", "mongo_id_type"], with_vectors=False,
+        )
+        for point in points:
+            identifier = point.payload["mongo_id"]
+            rows = object_rows if point.payload["mongo_id_type"] == "ObjectId" else string_rows
+            for row in rows.get(identifier, ()):
+                known[row] = identifier
+        if offset is None:
+            break
+    return known
 
 
 def main():

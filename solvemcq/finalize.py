@@ -11,7 +11,7 @@ from .pipeline import split_exact
 from .review import ReviewJob
 
 
-def finalize(input_path, report_path, db_path, output, subject):
+def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only=False):
     if output.exists():
         raise ValueError("Output directory already exists. Choose a new output path.")
 
@@ -164,12 +164,20 @@ def finalize(input_path, report_path, db_path, output, subject):
         "unresolved.json": {"pairs": unresolved, "blocked_duplicate_groups": conflicts},
         "summary.json": summary,
     }
-    if job.report.schema_version == 2:
+    if job.report.schema_version == 2 or reviewed_only:
+        existing_ids = job.report.existing_ids or {}
+        if not existing_ids.keys() <= {item.row for item in retained}:
+            raise ValueError("Candidate report contains an unknown existing input row")
         ready = [
             item.record for item in retained
-            if item.id not in removed_to_keeper and item.id not in held
+            if item.id not in removed_to_keeper and item.id not in held and item.row not in existing_ids
         ]
         results["import_ready.json"] = ready
+        results["already_in_bank.json"] = [
+            {"input_row": item.row, "mongo_id": existing_ids[item.row], "record": item.record}
+            for item in retained if item.row in existing_ids
+        ]
+        summary["already_in_bank_questions"] = len(existing_ids)
         summary["import_ready_questions"] = len(ready)
         summary["held_questions"] = len(unique) - len(ready)
     write_results(output, results)

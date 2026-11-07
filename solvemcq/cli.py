@@ -11,7 +11,7 @@ from .input import load_questions
 from .pipeline import MODEL, embedder, find_candidates, index_questions, split_exact
 
 
-def run(args):
+def run(args, *, embedding=None):
     if args.output.exists():
         raise ValueError("Output directory already exists. Choose a new output path.")
     if min(args.top_k, args.batch_size) < 1 or not -1 <= args.threshold <= 1:
@@ -19,7 +19,7 @@ def run(args):
     batch_id, questions = load_questions(args.input, args.subject)
     retained, duplicates = split_exact(questions)
     collection = f"solvemcq_bge_m3_v1_{batch_id}"
-    dimension, encode = embedder(args.device)
+    dimension, encode = embedding if embedding is not None else embedder(args.device)
     client = (
         QdrantClient(url=args.qdrant_url, api_key=os.getenv("QDRANT_API_KEY"))
         if args.qdrant_url else QdrantClient(path=str(args.index_path))
@@ -30,7 +30,7 @@ def run(args):
         index_questions(client, collection, retained, dimension, encode, args.batch_size)
         pairs = find_candidates(client, collection, retained, args.top_k, args.threshold)
         if bank_name:
-            cross_pairs, bank_questions, missing_subjects = compare_bank(
+            cross_pairs, bank_questions, missing_subjects, known_rows = compare_bank(
                 client, collection, bank_name, retained, args.top_k, args.threshold,
             )
             pairs.extend(cross_pairs)
@@ -54,6 +54,7 @@ def run(args):
         summary.update({
             "bank": bank_name,
             "bank_candidate_pairs": len(cross_pairs),
+            "already_in_bank": len(known_rows),
             "bank_subjects_without_records": missing_subjects,
         })
     results = {
@@ -72,6 +73,7 @@ def run(args):
                 for item in retained if item.id in review_ids
             },
             "pairs": pairs,
+            **({"existing_ids": known_rows} if bank_name else {}),
         },
         "summary.json": {
             "batch_id": batch_id, "embedding_model": MODEL, "collection": collection,
@@ -80,6 +82,7 @@ def run(args):
     }
     write_results(args.output, results)
     print(json.dumps(summary, indent=2))
+    return summary
 
 
 def write_results(output, results):
