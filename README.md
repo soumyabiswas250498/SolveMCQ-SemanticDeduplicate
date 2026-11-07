@@ -23,9 +23,9 @@ Accepts a JSON array or an object containing a `questions` array. Each row needs
 
 - `subjectId` or `subject` as a string, or a CLI fallback such as `--subject history`. Use consistent subject IDs across the input.
 - Plain-text `questionText` or `question`.
-- Plain-text `answer`, or an `options` array of `{key, text}` objects and a matching `correctOptionKey`. When both forms are supplied, they must agree.
+- Plain-text `correctAnswer` or `answer`, or an `options` array of `{key, text}` objects and a matching `correctOptionKey`. When both forms are supplied, they must agree.
 
-Schema assumptions are provisional pending a real export. The CLI reports invalid rows by their one-based position.
+The CLI accepts one trailing comma at the end of a top-level array of records and reports other malformed JSON. Invalid rows are reported by their one-based position. Use `--subject history` for single-subject history exports without a subject field.
 
 ## Output
 

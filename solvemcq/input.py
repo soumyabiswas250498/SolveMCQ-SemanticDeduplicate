@@ -1,5 +1,7 @@
 import hashlib
 import json
+import re
+import warnings
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -36,7 +38,20 @@ def load_questions(path: Path, default_subject: str | None):
     def reject_constant(value):
         raise ValueError(f"Invalid JSON constant: {value}")
 
-    records = json.loads(path.read_text(encoding="utf-8-sig"), parse_constant=reject_constant)
+    source = path.read_text(encoding="utf-8-sig")
+    try:
+        records = json.loads(source, parse_constant=reject_constant)
+    except json.JSONDecodeError as error:
+        # Some exports have one comma before the outer array's closing bracket.
+        if (
+            not source.lstrip().startswith("[")
+            or not re.fullmatch(r"\]\s*", source[error.pos:])
+            or not source[:error.pos].rstrip().endswith("},")
+        ):
+            raise
+        prefix = source[:error.pos].rstrip()
+        records = json.loads(prefix[:-1] + "]", parse_constant=reject_constant)
+        warnings.warn("Ignored a trailing comma in the input array.", stacklevel=2)
     if isinstance(records, dict):
         records = records.get("questions")
     if not isinstance(records, list) or not records:
@@ -54,6 +69,10 @@ def load_questions(path: Path, default_subject: str | None):
             question = required_text(record.get("questionText", record.get("question")), "question")
             choices = {}
             correct_key = None
+            answer_fields = {
+                field: required_text(record[field], field)
+                for field in ("correctAnswer", "answer") if field in record
+            }
             if "options" in record:
                 options = record["options"]
                 if not isinstance(options, list) or len(options) < 2:
@@ -69,10 +88,11 @@ def load_questions(path: Path, default_subject: str | None):
                 if correct_key not in choices:
                     raise ValueError("correctOptionKey must match an option key")
                 answer = choices[correct_key]
-                if "answer" in record and required_text(record["answer"], "answer") != answer:
-                    raise ValueError("answer disagrees with the keyed option")
             else:
-                answer = required_text(record.get("answer"), "answer")
+                answer = required_text(record.get("correctAnswer", record.get("answer")), "answer")
+            for field, supplied_answer in answer_fields.items():
+                if supplied_answer != answer:
+                    raise ValueError(f"{field} disagrees with the resolved answer")
             questions.append(Question(
                 str(uuid.uuid5(uuid.NAMESPACE_URL, f"solvemcq:{batch_id}:{row}")),
                 row, subject, question, answer, tuple(choices.items()), correct_key, record,

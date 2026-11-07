@@ -60,6 +60,23 @@ class PipelineTest(unittest.TestCase):
                 run(args)
             self.assertEqual(read("review_candidates.json"), review)
 
+    def test_export_format(self):
+        record = {
+            "id": "sample", "language": "bn", "questionText": "প্রশ্ন?",
+            "options": [{"key": "A", "text": "সঠিক"}, {"key": "B", "text": "ভুল"}],
+            "correctOptionKey": "A", "correctAnswer": "সঠিক",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "export.json"
+            path.write_text("[" + json.dumps(record) + ",\n]", encoding="utf-8")
+            with self.assertWarnsRegex(UserWarning, "trailing comma"):
+                _, questions = load_questions(path, "history")
+            self.assertEqual(questions[0].answer, "সঠিক")
+            self.assertEqual(questions[0].record, record)
+            path.write_text(json.dumps([{**record, "correctAnswer": "ভুল"}]), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "correctAnswer disagrees"):
+                load_questions(path, "history")
+
     def test_rejects_missing_answer(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "input.json"
