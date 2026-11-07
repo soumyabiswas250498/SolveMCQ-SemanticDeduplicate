@@ -45,8 +45,46 @@ Phase 1 handles a single batch. Existing MongoDB records can be included through
 ## Tests
 
 ```sh
-python -m pip install -e .
+python -m pip install -e '.[review]'
 python -m unittest discover -s tests -v
 ```
 
 The integration test uses embedded Qdrant and deterministic test embeddings, so it runs without downloading the model.
+
+## Phase 2 review via MCP
+
+Run Phase 1 for the input batch, then point the review server at the generated
+`review_candidates.json`. Each server instance serves one report.
+
+```sh
+python -m pip install -e '.[embeddings,review]'
+solvemcq questions.json --subject history --output output/history
+solvemcq-review output/history/review_candidates.json --transport streamable-http
+```
+
+Test with an MCP client at `http://127.0.0.1:8765/mcp`. For a client that
+launches MCP servers as subprocesses, omit `--transport` to use stdio.
+For ChatGPT Work, connect the local server through a private
+[Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+and add it under Plugins → Add custom MCP server → Tunnel. This server binds to
+loopback and relies on the local or private connection for access control.
+Keep the endpoint private.
+
+| Tool | Purpose |
+|---|---|
+| `get_review_summary` | Show pending, duplicate, distinct and deferred pair counts |
+| `get_review_batch` | Fetch up to 25 pending pairs or revisit the `needs_review` queue |
+| `submit_decisions` | Save verdicts with reasons and a keeper ID for each duplicate |
+
+Example Work prompt:
+
+> Review the next 10 SolveMCQ candidate pairs. Save a duplicate decision
+> when both questions test the same fact, distinct when they test different
+> facts, and needs_review when a conflicting answer or missing context
+> prevents a decision. Tell me how many pairs remain.
+
+Decisions persist in `.solvemcq/reviews.sqlite3` (override with `--db`). Restart
+with the same report and DB to resume. A changed report starts a separate review
+job. Identical retries are safe, and a conflicting final verdict rejects the
+entire submission. A deferred verdict can be resolved later. Decisions apply
+to individual pairs. Applying them to produce the final unique JSON is Phase 3.

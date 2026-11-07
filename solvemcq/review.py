@@ -1,0 +1,154 @@
+import hashlib
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field, StringConstraints
+
+from .input import stable_json
+
+
+Verdict = Literal["duplicate", "distinct", "needs_review"]
+
+
+class CandidateQuestion(BaseModel):
+    input_row: int
+    subject: str
+    question: str
+    answer: str
+
+
+class CandidatePair(BaseModel):
+    question_ids: tuple[str, str]
+    question_score: float = Field(ge=-1, le=1)
+    answer_score: float = Field(ge=-1, le=1)
+    same_answer_text: bool
+
+
+class CandidateReport(BaseModel):
+    schema_version: Literal[1]
+    batch_id: str
+    questions: dict[str, CandidateQuestion]
+    pairs: list[CandidatePair]
+
+
+class Decision(BaseModel):
+    pair_id: int = Field(ge=1)
+    verdict: Verdict
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    keep_question_id: str | None = None
+
+
+class ReviewJob:
+    def __init__(self, report_path: Path, db_path: Path):
+        self.report = CandidateReport.model_validate_json(report_path.read_bytes())
+        seen = set()
+        for pair in self.report.pairs:
+            left, right = pair.question_ids
+            questions = self.report.questions
+            key = frozenset(pair.question_ids)
+            if (
+                left == right or left not in questions or right not in questions
+                or key in seen or questions[left].subject != questions[right].subject
+            ):
+                raise ValueError(f"Invalid or repeated candidate pair: {pair.question_ids}")
+            seen.add(key)
+
+        # A changed candidate set must never inherit decisions for positional pair IDs.
+        report_json = stable_json(self.report.model_dump(mode="json"))
+        self.job_id = hashlib.sha256(report_json.encode("utf-8")).hexdigest()
+        self.db_path = db_path
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(db_path)) as db, db:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS review_decisions (
+                    job_id TEXT NOT NULL,
+                    pair_id INTEGER NOT NULL,
+                    verdict TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    keep_question_id TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (job_id, pair_id)
+                )
+            """)
+
+    def summary(self):
+        with closing(sqlite3.connect(self.db_path)) as db:
+            counts = dict(db.execute("""
+                SELECT verdict, count(*) FROM review_decisions WHERE job_id = ? GROUP BY verdict
+            """, (self.job_id,)))
+        total = len(self.report.pairs)
+        return {
+            "job_id": self.job_id,
+            "batch_id": self.report.batch_id,
+            "candidate_pairs": total,
+            "pending": total - sum(counts.values()),
+            "duplicates": counts.get("duplicate", 0),
+            "distinct": counts.get("distinct", 0),
+            "needs_review": counts.get("needs_review", 0),
+        }
+
+    def batch(self, limit: int, queue: Literal["pending", "needs_review"]):
+        with closing(sqlite3.connect(self.db_path)) as db:
+            decisions = {pair_id: (verdict, reason) for pair_id, verdict, reason in db.execute("""
+                SELECT pair_id, verdict, reason FROM review_decisions WHERE job_id = ?
+            """, (self.job_id,))}
+        candidates = []
+        for pair_id, pair in enumerate(self.report.pairs, 1):
+            verdict, reason = decisions.get(pair_id, ("pending", None))
+            if verdict != queue:
+                continue
+            candidates.append({
+                "pair_id": pair_id,
+                **pair.model_dump(mode="json"),
+                "questions": [
+                    {"question_id": question_id, **self.report.questions[question_id].model_dump()}
+                    for question_id in pair.question_ids
+                ],
+                "previous_reason": reason,
+            })
+            if len(candidates) == limit:
+                break
+        return {"job_id": self.job_id, "queue": queue, "candidates": candidates}
+
+    def submit(self, job_id: str, decisions: list[Decision]):
+        if job_id != self.job_id:
+            raise ValueError("Job ID does not match the current report. Fetch a new review batch.")
+        seen = set()
+        for decision in decisions:
+            if decision.pair_id > len(self.report.pairs) or decision.pair_id in seen:
+                raise ValueError(f"Unknown or repeated pair ID: {decision.pair_id}")
+            seen.add(decision.pair_id)
+            pair = self.report.pairs[decision.pair_id - 1]
+            if decision.verdict == "duplicate":
+                if decision.keep_question_id not in pair.question_ids:
+                    raise ValueError(f"Pair {decision.pair_id} requires a keeper from that pair")
+            elif decision.keep_question_id is not None:
+                raise ValueError("Only a duplicate verdict can name a keeper")
+
+        saved = 0
+        with closing(sqlite3.connect(self.db_path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            for decision in decisions:
+                key = (self.job_id, decision.pair_id)
+                value = (decision.verdict, decision.reason, decision.keep_question_id)
+                previous = db.execute("""
+                    SELECT verdict, reason, keep_question_id
+                    FROM review_decisions WHERE job_id = ? AND pair_id = ?
+                """, key).fetchone()
+                if previous == value:
+                    continue
+                if previous is not None and previous[0] != "needs_review":
+                    raise ValueError(f"Pair {decision.pair_id} already has a final decision")
+                db.execute("""
+                    INSERT INTO review_decisions (job_id, pair_id, verdict, reason, keep_question_id)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (job_id, pair_id) DO UPDATE SET
+                        verdict = excluded.verdict,
+                        reason = excluded.reason,
+                        keep_question_id = excluded.keep_question_id,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (*key, *value))
+                saved += 1
+        return {"job_id": self.job_id, "saved": saved, "already_saved": len(decisions) - saved}

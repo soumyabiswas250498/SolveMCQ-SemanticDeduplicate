@@ -10,9 +10,11 @@ dependencies = ["qdrant-client>=1.14,<2"]
 
 [project.optional-dependencies]
 embeddings = ["sentence-transformers>=3,<6"]
+review = ["mcp>=1.30,<2"]
 
 [project.scripts]
 solvemcq = "solvemcq.cli:main"
+solvemcq-review = "solvemcq.review_server:main"
 
 [tool.setuptools.packages.find]
 include = ["solvemcq*"]
