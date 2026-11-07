@@ -180,3 +180,45 @@ class BrowserWorkflowTest(unittest.TestCase):
                 self.assertEqual(resumed["review"]["needs_review"], 1)
                 workflow.decide(resumed["id"], {"pair_id": 1, "verdict": "distinct"})
             self.assertEqual(original.summary()["distinct"], 1)
+
+    def test_group_keeps_multiple_questions_and_reopens_saved_selection(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workflow = LocalWorkflow(root)
+
+            def encode(texts, **_):
+                return np.array([[1.0, 0.0] if text.startswith("First") else [0.0, 1.0] for text in texts])
+
+            workflow.embedding = 2, encode
+            records = [
+                {"_id": str(index), "subject": "history", "question": question, "answer": question}
+                for index, question in enumerate(("First A", "First B", "First C", "Second A", "Second B"), 1)
+            ]
+            workflow.start({"mode": "baseline", "bank": json.dumps(records)})
+            deadline = time.monotonic() + 5
+            while workflow.snapshot()["status"] == "running" and time.monotonic() < deadline:
+                time.sleep(0.02)
+            state = workflow.snapshot()
+            self.assertEqual(state["status"], "ready", state)
+            job_id = state["id"]
+            groups = workflow.dispute_groups(job_id)
+            self.assertEqual(sorted(item["size"] for item in groups), [2, 3])
+            group_id = next(item["id"] for item in groups if item["size"] == 3)
+            group = workflow.dispute_groups(job_id, group_id)
+            keep = [item["question_id"] for item in group["questions"] if item["mongo_id"] in {"1", "3"}]
+            with self.assertRaisesRegex(ValueError, "Keep at least one"):
+                workflow.save_dispute(job_id, {"group": group_id, "members": group["members"], "keep": []})
+            state = workflow.save_dispute(job_id, {
+                "group": group_id, "members": group["members"], "keep": keep, "reason": "Two distinct facts",
+            })
+            self.assertEqual(state["review"]["resolved_by_selection"], 3)
+            self.assertEqual(state["review"]["pending"], 1)
+            workflow = LocalWorkflow(root)
+            saved = workflow.dispute_groups(job_id, group_id)
+            self.assertEqual(saved["keep"], sorted(keep))
+            self.assertEqual(saved["reason"], "Two distinct facts")
+            state = workflow.export(job_id)
+            self.assertEqual(state["export"]["summary"]["proposed_archives"], 1)
+            proposals = json.loads(workflow.download(job_id, "proposed_archives.json"))
+            self.assertEqual([item["archive_id"] for item in proposals], ["2"])
+            self.assertIn(proposals[0]["keep_id"], {"1", "3"})

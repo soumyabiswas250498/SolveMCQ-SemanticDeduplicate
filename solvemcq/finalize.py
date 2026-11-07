@@ -98,7 +98,8 @@ def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only
 
 
 def reconcile(job, describe, protected_ids=()):
-    decisions = job.saved_decisions()
+    decisions, selections = job.review_state()
+    covered = {pair_id for item in selections.values() for pair_id in item["pairs"]}
     if any(pair_id > len(job.report.pairs) for pair_id in decisions):
         raise ValueError("Review database contains an unknown pair ID for this report")
 
@@ -110,6 +111,8 @@ def reconcile(job, describe, protected_ids=()):
     blocked = defaultdict(set)
 
     for pair_id, pair in enumerate(job.report.pairs, 1):
+        if pair_id in covered:
+            continue
         left, right = pair.question_ids
         decision = decisions.get(pair_id)
         if decision is None or decision.verdict == "needs_review":
@@ -186,6 +189,16 @@ def reconcile(job, describe, protected_ids=()):
         for item in component - {keeper}:
             removed_to_keeper[item] = keeper
             evidence[item] = pair_ids
+    for selection in selections.values():
+        keep = selection["keep"]
+        scores = {}
+        for pair_id in selection["pairs"]:
+            pair = job.report.pairs[pair_id - 1]
+            scores[frozenset(pair.question_ids)] = pair.question_score
+        for item in set(selection["members"]) - set(keep):
+            keeper = max(keep, key=lambda other: scores.get(frozenset((item, other)), -2))
+            removed_to_keeper[item] = keeper
+            evidence[item] = selection["pairs"]
     return removed_to_keeper, evidence, unresolved, conflicts, held
 
 

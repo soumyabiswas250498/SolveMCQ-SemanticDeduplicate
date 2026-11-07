@@ -7,7 +7,7 @@
 <style>
 :root{color-scheme:light;--ink:#17263a;--muted:#4a5b70;--line:#d7e0ea;--navy:#16273e;--blue:#154aa0;--paper:#fff;--bg:#f3f6fa;--green:#155b46;--pale:#eaf5ef}
 *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 system-ui,-apple-system,sans-serif}
-header{background:var(--navy);color:white} .bar,main{max-width:1050px;margin:auto;padding:20px 26px}
+header{background:var(--navy);color:white} .bar,main{width:100%;margin:auto;padding:20px clamp(16px,2vw,36px)}
 .bar{display:flex;align-items:center;justify-content:space-between;gap:12px}.brand{font-size:21px;font-weight:800}.local{font-size:14px;color:#d5e4f8}
 main{padding-top:38px;padding-bottom:48px} h1,h2,h3,p{margin:0} h1{font-size:clamp(30px,5vw,48px);line-height:1.15;letter-spacing:-.045em;margin:10px 0}
 h2{font-size:27px;line-height:1.25;letter-spacing:-.02em} h3{font-size:15px;color:var(--muted);margin-bottom:8px}.sub{color:var(--muted);margin-top:7px}
@@ -29,6 +29,18 @@ button[aria-pressed="true"]{background:#e7effd;border-color:#8ca8d2}
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.stat{padding:11px;border-radius:9px;background:#edf2f8;font-size:14px;color:var(--muted)}.stat strong{font-size:25px;line-height:1.2;display:block;color:var(--ink)}
 progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--blue)}.answer{color:var(--green);background:var(--pale);border-radius:8px;padding:8px 10px;margin-top:12px;font-weight:650}.question ol{padding-left:23px;margin-bottom:4px}
 .question p{font-size:20px;line-height:1.45;font-weight:650}.result{margin-top:14px} [hidden]{display:none!important}
+.pair{grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))}
+.review-workspace{display:grid;grid-template-columns:minmax(230px,20vw) minmax(0,1fr);gap:20px;margin-top:18px}
+.dispute-list{display:grid;align-content:start;gap:8px;max-height:70vh;overflow:auto;padding:6px;border:1px solid var(--line);border-radius:10px}
+.dispute-list button{display:block;width:100%;text-align:left;font-size:15px;overflow-wrap:anywhere}
+.dispute-list button[aria-current]{background:#e7effd;border-color:#8ca8d2}
+.dispute-list small{display:block;color:var(--muted);font-weight:500}
+.group-nav{margin-bottom:10px}.group-nav .actions{margin:0}
+.keep-label{display:flex;align-items:center;gap:9px;margin:8px 0 12px;color:var(--blue)}
+.keep-label input{width:22px;height:22px;accent-color:var(--blue);flex:none}
+.question:has(input:not(:checked)){background:#fff8f4;border-color:#dcb6a9}
+.question ul{padding-left:20px}
+@media(max-width:780px){.review-workspace{grid-template-columns:1fr}.dispute-list{max-height:210px}}
 @media(max-width:620px){.bar,main{padding-left:16px;padding-right:16px}.panel{padding:16px}.files,.pair{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
@@ -82,15 +94,32 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
     <div class="actions" id="review-list" aria-label="Review list" hidden>
       <button id="pending" type="button" aria-pressed="true">To review</button>
       <button id="deferred" type="button" aria-pressed="false">Needs your decision</button>
+      <button id="all-disputes" type="button" aria-pressed="false">All disputes</button>
     </div>
-    <p id="pair-status" class="sub" aria-live="polite"></p>
-    <div id="pair-area" hidden>
-      <div id="pair" class="pair"></div>
-      <div class="actions" id="pair-actions"></div>
-      <details id="reason-details"><summary>Add a note (optional)</summary>
-        <label for="reason">Reason for this decision</label>
-        <input id="reason" type="text" maxlength="1000">
-      </details>
+    <div id="review-workspace" class="review-workspace" hidden>
+      <aside>
+        <h3>Disputes</h3>
+        <div id="dispute-list" class="dispute-list" tabindex="0" aria-label="Scrollable dispute list"></div>
+      </aside>
+      <div>
+        <div class="row group-nav">
+          <p id="pair-status" class="sub" aria-live="polite"></p>
+          <div class="actions">
+            <button id="previous" type="button">← Previous</button>
+            <button id="next" type="button">Next →</button>
+          </div>
+        </div>
+        <div id="pair-area" hidden>
+          <p class="sub">Check every question you want to keep. Unchecked questions are discarded when you save.</p>
+          <div id="pair" class="pair"></div>
+          <details id="group-notes" hidden><summary>See earlier pair decisions</summary><ul id="notes"></ul></details>
+          <details id="reason-details"><summary>Add a note (optional)</summary>
+            <label for="reason">Reason for this selection</label>
+            <input id="reason" type="text" maxlength="1000">
+          </details>
+          <div class="actions" id="pair-actions"></div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -110,7 +139,8 @@ let queue = "pending";
 let busy = false;
 let mode = "incoming";
 let manual = false;
-let after = 0;
+let activeGroup = null;
+let visibleGroups = [];
 let pendingPoll;
 
 
@@ -158,7 +188,7 @@ function render() {
   $("results-note").textContent = baseline
     ? "Preview the proposed archive list. This app saves a report only."
     : "Unresolved questions and questions already in your bank stay out of the ready file.";
-  $("review-list").hidden = !manual || !!state.agent_running;
+  $("review-list").hidden = $("review-workspace").hidden = !manual || !!state.agent_running;
   $("manual").hidden = !!state.agent_running;
   $("agent").hidden = !!state.agent_running || r.pending === 0;
   $("pause").hidden = !state.agent_running;
@@ -180,7 +210,8 @@ function render() {
   const scan = state.scan;
   $("scan-summary").textContent = `${scan.input_questions} questions checked` +
     (baseline ? "" : ` · ${scan.exact_duplicates} exact repeats`) +
-    (scan.bank ? ` · ${scan.already_in_bank} IDs already in the bank` : "");
+    (scan.bank ? ` · ${scan.already_in_bank} IDs already in the bank` : "") +
+    (r.resolved_by_selection ? ` · ${r.resolved_by_selection} pairs resolved by group selections` : "");
   const downloads = $("downloads");
   downloads.replaceChildren();
   if (state.export) {
@@ -208,7 +239,8 @@ function render() {
           item.append(" ", button(`Review pair ${pairId}`, () => attempt(async () => {
             manual = true;
             render();
-            await showPair(pairId);
+            queue = "all";
+            await showDispute(null, pairId);
             $("review-title").scrollIntoView();
           })));
         }
@@ -236,62 +268,100 @@ function render() {
   }
 }
 
-async function showPair(conflictId) {
+const statusLabels = {
+  pending: "To review", needs_review: "Needs your decision", reviewed: "Pair review complete", saved: "Selection saved"
+};
+
+async function showDispute(groupId = activeGroup, conflictPair) {
   $("pending").setAttribute("aria-pressed", queue === "pending");
   $("deferred").setAttribute("aria-pressed", queue === "needs_review");
+  $("all-disputes").setAttribute("aria-pressed", queue === "all");
   $("pair-area").hidden = true;
-  $("reason").value = "";
-  $("reason-details").open = false;
-  const params = {job: state.id, queue, after};
-  if (conflictId) params.conflict = conflictId;
-  let pair = await api("pair?" + new URLSearchParams(params));
-  if (!pair && after && !conflictId) {
-    after = 0;
-    pair = await api("pair?" + new URLSearchParams({job: state.id, queue, after}));
+  const params = {job: state.id};
+  const groups = await api("disputes?" + new URLSearchParams(params));
+  visibleGroups = groups.filter(group => queue === "all" || group.status === queue);
+  if (conflictPair) groupId = visibleGroups.find(group => group.pairs.includes(conflictPair))?.id;
+  const index = Math.max(0, visibleGroups.findIndex(group => group.id === groupId));
+  activeGroup = visibleGroups[index]?.id ?? null;
+
+  const list = $("dispute-list");
+  const scroll = list.scrollTop;
+  list.replaceChildren();
+  for (const group of visibleGroups) {
+    const item = button(group.title, () => attempt(() => showDispute(group.id)));
+    item.append(node("small", `${group.size} questions · ${statusLabels[group.status]}`));
+    if (group.id === activeGroup) item.setAttribute("aria-current", "true");
+    list.append(item);
   }
-  if (!pair) {
-    $("pair-status").textContent = queue === "pending"
-      ? "No pairs are waiting for a first review."
-      : "No pairs have been set aside.";
+  list.scrollTop = scroll;
+  list.querySelector("[aria-current]")?.scrollIntoView?.({block: "nearest", container: "nearest"});
+  $("previous").hidden = index === 0;
+  $("next").hidden = index >= visibleGroups.length - 1;
+  if (activeGroup === null) {
+    list.append(node("p", "No disputes in this list.", "sub"));
+    $("pair-status").textContent = "No disputes in this list.";
     return;
   }
-  $("pair-status").textContent = `Pair ${pair.pair_id} of ${state.review.candidate_pairs}` +
-    (pair.previous_reason ? ` · ${pair.previous_reason}` : "");
+
+  const group = await api("disputes?" + new URLSearchParams({...params, group: activeGroup}));
+  $("pair-status").textContent = `Dispute ${index + 1} of ${visibleGroups.length} · ${group.questions.length} questions`;
   $("pair-area").hidden = false;
+  $("reason").value = group.reason;
+  $("reason-details").open = !!group.reason;
   $("pair").replaceChildren();
-  const actions = $("pair-actions");
-  actions.replaceChildren();
-  const existing = pair.questions.filter(question => question.mongo_id).length === 1;
-  for (const [index, question] of pair.questions.entries()) {
+  const keep = new Set(group.keep ?? group.members);
+  const numbers = new Map();
+  const baseline = state.mode === "baseline";
+  for (const [index, question] of group.questions.entries()) {
+    numbers.set(question.question_id, index + 1);
     const card = node("article", undefined, "question");
-    const letter = index ? "B" : "A";
-    card.append(node("h3", `Question ${letter} · ${question.mongo_id ? "Existing bank" : "Uploaded file"}`),
-                node("p", question.question));
+    card.append(node("h3", `Question ${index + 1} · ${question.mongo_id ? "Existing bank" : "Uploaded file"}`));
+    const label = node("label", undefined, "keep-label");
+    const check = node("input");
+    check.type = "checkbox";
+    check.checked = keep.has(question.question_id);
+    check.disabled = !!question.mongo_id && !baseline;
+    check.addEventListener("change", () => {
+      if (check.checked) keep.add(question.question_id);
+      else keep.delete(question.question_id);
+      selection.textContent = `${keep.size} to keep · ${group.members.length - keep.size} to discard`;
+    });
+    label.append(check, check.disabled ? "Keep existing bank question" : `Keep question ${index + 1}`);
+    card.append(label, node("p", question.question));
     if (question.options.length) {
       const choices = node("details");
-      choices.append(node("summary", "Show answer choices"));
+      choices.append(node("summary", "Answer choices"));
       choices.open = true;
-      const options = node("ol");
+      const options = node("ul");
       for (const option of question.options) options.append(node("li", `${option.key}. ${option.text}`));
       choices.append(options);
       card.append(choices);
     }
     card.append(node("div", "Answer: " + question.answer, "answer"));
     $("pair").append(card);
-    if (!existing || question.mongo_id) {
-      actions.append(button(existing && question.mongo_id ? "Same — keep bank question" : `Same — keep ${letter}`,
-        () => save(pair.pair_id, "duplicate", question.question_id, conflictId), true));
-    }
   }
-  actions.append(button("Different questions", () => save(pair.pair_id, "distinct", undefined, conflictId)));
-  if (queue === "pending" || conflictId) {
-    actions.append(button("Set aside for later", () => save(pair.pair_id, "needs_review", undefined, conflictId)));
-  } else {
-    actions.append(button("Leave for later · Next pair", () => attempt(async () => {
-      after = pair.pair_id;
-      await showPair();
-    })));
-  }
+  $("group-notes").hidden = !group.notes.length;
+  $("notes").replaceChildren(...group.notes.map(note => node("li",
+    `Questions ${note.question_ids.map(id => numbers.get(id)).join(" and ")} · ${note.reason}`
+  )));
+  $("group-notes").open = group.status === "needs_review";
+  const selection = node("p", `${keep.size} to keep · ${group.members.length - keep.size} to discard`, "sub");
+  selection.setAttribute("aria-live", "polite");
+  const actions = $("pair-actions");
+  actions.replaceChildren(button("Save selection", () => attempt(async () => {
+    if (!keep.size) throw Error("Keep at least one question.");
+    state = await api("save-dispute", {
+      job: state.id, group: group.id, members: group.members, keep: [...keep], reason: $("reason").value
+    });
+    render();
+    await showDispute(visibleGroups[index + 1]?.id ?? group.id);
+  }), true), selection);
+}
+
+function moveDispute(offset) {
+  const index = visibleGroups.findIndex(group => group.id === activeGroup);
+  const target = visibleGroups[index + offset];
+  if (target) return attempt(() => showDispute(target.id));
 }
 
 async function attempt(action) {
@@ -308,14 +378,6 @@ async function attempt(action) {
   }
 }
 
-function save(pair_id, verdict, keep_question_id, conflict) {
-  return attempt(async () => {
-    state = await api("decide", {job: state.id, pair_id, verdict, keep_question_id, conflict, reason: $("reason").value});
-    render();
-    await showPair();
-  });
-}
-
 async function refresh() {
   state = await api("state");
   render();
@@ -323,7 +385,7 @@ async function refresh() {
   if (state.status === "running" || state.agent_running) {
     pendingPoll = setTimeout(() => attempt(refresh), 1500);
   } else if (state.status === "ready" && manual) {
-    await showPair();
+    await showDispute();
   }
 }
 
@@ -337,7 +399,7 @@ $("files-form").addEventListener("submit", event => {
       subject: $("subject").value, database: $("database").value, use_mongo: $("live").checked
     });
     queue = "pending";
-    after = 0;
+    activeGroup = null;
     manual = false;
     await refresh();
   });
@@ -356,15 +418,15 @@ for (const choice of ["incoming", "baseline", "resume"]) {
 }
 $("manual").onclick = () => attempt(async () => {
   manual = true;
-  queue = state.review.pending ? "pending" : "needs_review";
-  after = 0;
+  queue = state.review.needs_review ? "needs_review" : state.review.pending ? "pending" : "all";
+  activeGroup = null;
   render();
-  await showPair();
+  await showDispute();
 });
 $("agent").onclick = () => attempt(async () => {
   manual = true;
   queue = "needs_review";
-  after = 0;
+  activeGroup = null;
   state = await api("agent", {job: state.id});
   await refresh();
 });
@@ -372,8 +434,11 @@ $("pause").onclick = () => attempt(async () => {
   state = await api("pause", {job: state.id});
   await refresh();
 });
-$("pending").onclick = () => attempt(async () => { queue = "pending"; after = 0; await showPair(); });
-$("deferred").onclick = () => attempt(async () => { queue = "needs_review"; after = 0; await showPair(); });
+for (const [id, filter] of [["pending", "pending"], ["deferred", "needs_review"], ["all-disputes", "all"]]) {
+  $(id).onclick = () => attempt(async () => { queue = filter; activeGroup = null; await showDispute(); });
+}
+$("previous").onclick = () => moveDispute(-1);
+$("next").onclick = () => moveDispute(1);
 $("export").onclick = () => attempt(async () => { state = await api("export", {job: state.id}); render(); });
 $("new").onclick = () => {
   $("setup").hidden = false;

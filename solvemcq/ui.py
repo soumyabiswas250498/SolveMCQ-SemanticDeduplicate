@@ -240,6 +240,43 @@ class LocalWorkflow:
             self.add_choices(path, pairs)
             return pairs[0] if pairs else None
 
+    def dispute_groups(self, job_id, group_id=None):
+        with self.lock:
+            path = self.require_ready(job_id)
+            job = self.job()
+            decisions, selections = job.review_state()
+            groups = job.groups(decisions, selections)
+            if group_id is None:
+                return [
+                    {"id": group["id"], "status": group["status"], "size": len(group["members"]),
+                     "title": job.report.questions[group["members"][0]].question, "pairs": group["pairs"]}
+                    for group in groups.values()
+                ]
+            if group_id not in groups:
+                raise ValueError("This dispute changed. Open it again.")
+            group = groups[group_id]
+            group["questions"] = [
+                {"question_id": item, **job.report.questions[item].model_dump(exclude_none=True)}
+                for item in group["members"]
+            ]
+            group["notes"] = [
+                {"pair_id": pair_id, "verdict": decisions[pair_id].verdict,
+                 "reason": decisions[pair_id].reason,
+                 "question_ids": job.report.pairs[pair_id - 1].question_ids}
+                for pair_id in group["pairs"] if pair_id in decisions
+            ]
+            self.add_choices(path, [group])
+            return group
+
+    def save_dispute(self, job_id, data):
+        with self.lock:
+            self.require_ready(job_id)
+            if self.state.get("agent_running"):
+                raise ValueError("Pause agent review before saving a dispute.")
+            self.job().save_group(data.get("group"), data.get("members"), data.get("keep"), data.get("reason", ""))
+            self.update(export=None)
+            return self.snapshot()
+
     def start_agent(self, job_id):
         with self.lock:
             path = self.require_ready(job_id)
@@ -399,6 +436,9 @@ class LocalHandler(BaseHTTPRequestHandler):
                     raise ValueError("Unknown review list.")
                 conflict = int(query["conflict"]) if "conflict" in query else None
                 self.send_json(200, workflow.pair(query.get("job"), queue, int(query.get("after", "0")), conflict))
+            elif path == "/api/disputes":
+                group_id = int(query["group"]) if "group" in query else None
+                self.send_json(200, workflow.dispute_groups(query.get("job"), group_id))
             elif path == "/api/download":
                 filename = query.get("file")
                 self.send_content(200, workflow.download(query.get("job"), filename),
@@ -417,6 +457,8 @@ class LocalHandler(BaseHTTPRequestHandler):
             result = workflow.start(data)
         elif path == "/api/decide":
             result = workflow.decide(data.get("job"), data)
+        elif path == "/api/save-dispute":
+            result = workflow.save_dispute(data.get("job"), data)
         elif path == "/api/agent":
             result = workflow.start_agent(data.get("job"))
         elif path == "/api/pause":

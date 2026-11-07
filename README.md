@@ -199,8 +199,13 @@ the app with `solvemcq-ui` and open `http://127.0.0.1:8766` on the same computer
    the Codex CLI signed in with ChatGPT. It sends candidate pairs and their
    choices to Codex in batches and saves validated decisions as each batch
    completes. **Pause after this batch** preserves completed decisions.
-4. Open **Needs your decision** to handle uncertain matches. Choose a keeper,
-   mark the pair distinct, or leave it for later and advance.
+4. Open **Needs your decision** for uncertain matches or **All disputes** to
+   browse every dispute group. Related candidates appear together, including
+   groups of three or more. Check every question to keep and click
+   **Save selection**. Unchecked questions are proposed for archive in a
+   baseline or excluded from an incoming export. Existing bank questions
+   remain checked when reviewing an incoming batch. Use **Previous**, **Next**,
+   or the scrollable list to browse or revisit a saved selection.
 5. Use **Preview results**. Baseline jobs propose archive IDs and keepers.
    Incoming jobs prepare an import-ready JSON. The preview lists conflicts
    that can be opened and revised before exporting again.

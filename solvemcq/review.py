@@ -1,4 +1,6 @@
 import hashlib
+import json
+from collections import Counter, defaultdict
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -94,46 +96,140 @@ class ReviewJob:
     def saved_decisions(self):
         uri = self.db_path.resolve().as_uri() + "?mode=ro"
         with closing(sqlite3.connect(uri, uri=True)) as db:
-            return {
-                pair_id: Decision(
-                    pair_id=pair_id, verdict=verdict, reason=reason, keep_question_id=keeper,
-                )
-                for pair_id, verdict, reason, keeper in db.execute("""
-                    SELECT pair_id, verdict, reason, keep_question_id
-                    FROM review_decisions WHERE job_id = ? ORDER BY pair_id
-                """, (self.job_id,))
-            }
+            return self._decisions(db)
+
+    def _decisions(self, db):
+        return {
+            pair_id: Decision(pair_id=pair_id, verdict=verdict, reason=reason, keep_question_id=keeper)
+            for pair_id, verdict, reason, keeper in db.execute("""
+                SELECT pair_id, verdict, reason, keep_question_id
+                FROM review_decisions WHERE job_id = ? ORDER BY pair_id
+            """, (self.job_id,))
+        }
+
+    def _selections(self, db):
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name = 'review_group_selections'").fetchone():
+            return {}
+        return {
+            group_id: json.loads(data)
+            for group_id, data in db.execute("""
+                SELECT group_id, selection FROM review_group_selections WHERE job_id = ?
+            """, (self.job_id,))
+        }
+
+    def review_state(self):
+        uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as db:
+            db.execute("BEGIN")
+            return self._decisions(db), self._selections(db)
 
     def summary(self):
-        with closing(sqlite3.connect(self.db_path)) as db:
-            counts = dict(db.execute("""
-                SELECT verdict, count(*) FROM review_decisions WHERE job_id = ? GROUP BY verdict
-            """, (self.job_id,)))
+        decisions, selections = self.review_state()
+        covered = {pair_id for item in selections.values() for pair_id in item["pairs"]}
+        counts = Counter(decision.verdict for pair_id, decision in decisions.items() if pair_id not in covered)
         total = len(self.report.pairs)
-        return {
+        result = {
             "job_id": self.job_id,
             "batch_id": self.report.batch_id,
             "candidate_pairs": total,
-            "pending": total - sum(counts.values()),
-            "duplicates": counts.get("duplicate", 0),
-            "distinct": counts.get("distinct", 0),
-            "needs_review": counts.get("needs_review", 0),
+            "pending": total - sum(counts.values()) - len(covered),
+            "duplicates": counts["duplicate"],
+            "distinct": counts["distinct"],
+            "needs_review": counts["needs_review"],
         }
+        if covered:
+            result["resolved_by_selection"] = len(covered)
+        return result
 
     def batch(self, limit: int, queue: Literal["pending", "needs_review"], *, after: int = 0):
-        with closing(sqlite3.connect(self.db_path)) as db:
-            decisions = {pair_id: (verdict, reason) for pair_id, verdict, reason in db.execute("""
-                SELECT pair_id, verdict, reason FROM review_decisions WHERE job_id = ?
-            """, (self.job_id,))}
+        decisions, selections = self.review_state()
+        covered = {pair_id for item in selections.values() for pair_id in item["pairs"]}
         candidates = []
-        for pair_id in range(1, len(self.report.pairs) + 1):
-            verdict, reason = decisions.get(pair_id, ("pending", None))
-            if verdict != queue or pair_id <= after:
+        for pair_id in range(after + 1, len(self.report.pairs) + 1):
+            decision = decisions.get(pair_id)
+            verdict = decision.verdict if decision else "pending"
+            if verdict != queue or pair_id in covered:
                 continue
-            candidates.append(self.describe_pair(pair_id, reason))
+            candidates.append(self.describe_pair(pair_id, decision.reason if decision else None))
             if len(candidates) == limit:
                 break
         return {"job_id": self.job_id, "queue": queue, "candidates": candidates}
+
+    def groups(self, decisions, selections):
+        groups = {group_id: {**item, "id": group_id, "status": "saved"}
+                  for group_id, item in selections.items()}
+        saved_members = {question for item in selections.values() for question in item["members"]}
+        edges = defaultdict(list)
+        for pair_id, pair in enumerate(self.report.pairs, 1):
+            left, right = pair.question_ids
+            decision = decisions.get(pair_id)
+            if left in saved_members or right in saved_members or (decision and decision.verdict == "distinct"):
+                continue
+            edges[left].append((right, pair_id))
+            edges[right].append((left, pair_id))
+
+        visited = set()
+        for start in edges:
+            if start in visited:
+                continue
+            members = {start}
+            pairs = set()
+            pending = [start]
+            while pending:
+                for other, pair_id in edges[pending.pop()]:
+                    pairs.add(pair_id)
+                    if other not in members:
+                        members.add(other)
+                        pending.append(other)
+            visited.update(members)
+            verdicts = {decisions[pair_id].verdict if pair_id in decisions else "pending" for pair_id in pairs}
+            status = next((value for value in ("needs_review", "pending") if value in verdicts), "reviewed")
+            group_id = min(pairs)
+            groups[group_id] = {"id": group_id, "members": sorted(members), "pairs": sorted(pairs),
+                                "status": status, "keep": None, "reason": ""}
+        group_for_member = {member: group["id"] for group in groups.values() for member in group["members"]}
+        for pair_id, decision in decisions.items():
+            if decision.verdict != "distinct":
+                continue
+            left, right = self.report.pairs[pair_id - 1].question_ids
+            group_id = group_for_member.get(left)
+            if group_id is not None and group_id == group_for_member.get(right):
+                group = groups[group_id]
+                if group["keep"] is None:
+                    group["pairs"].append(pair_id)
+        for group in groups.values():
+            group["pairs"].sort()
+        return dict(sorted(groups.items()))
+
+    def save_group(self, group_id, members, keep, reason):
+        if not isinstance(keep, list) or not all(isinstance(item, str) for item in keep):
+            raise ValueError("Choose the questions to keep.")
+        if not isinstance(reason, str) or len(reason) > 1000:
+            raise ValueError("The note must be no longer than 1,000 characters.")
+        with closing(sqlite3.connect(self.db_path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            groups = self.groups(self._decisions(db), self._selections(db))
+            group = groups.get(group_id)
+            if group is None or group["members"] != members:
+                raise ValueError("The dispute changed. Open it again before saving.")
+            kept = set(keep)
+            if not kept or not kept <= set(members):
+                raise ValueError("Keep at least one question from this dispute.")
+            if not self.report.batch_id.startswith("bank:") and any(
+                self.report.questions[item].mongo_id is not None for item in set(members) - kept
+            ):
+                raise ValueError("Keep the existing bank questions when reviewing a new upload.")
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS review_group_selections (
+                    job_id TEXT NOT NULL, group_id INTEGER NOT NULL, selection TEXT NOT NULL,
+                    PRIMARY KEY (job_id, group_id)
+                )
+            """)
+            data = {"members": members, "pairs": group["pairs"], "keep": sorted(kept), "reason": reason.strip()}
+            db.execute("""
+                INSERT INTO review_group_selections VALUES (?, ?, ?)
+                ON CONFLICT (job_id, group_id) DO UPDATE SET selection = excluded.selection
+            """, (self.job_id, group_id, json.dumps(data)))
 
     def describe_pair(self, pair_id, reason=None):
         pair = self.report.pairs[pair_id - 1]
@@ -171,7 +267,10 @@ class ReviewJob:
         saved = 0
         with closing(sqlite3.connect(self.db_path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
+            saved_members = {question for item in self._selections(db).values() for question in item["members"]}
             for decision in decisions:
+                if saved_members.intersection(self.report.pairs[decision.pair_id - 1].question_ids):
+                    raise ValueError("This pair is covered by a saved group selection. Edit it in the browser.")
                 key = (self.job_id, decision.pair_id)
                 value = (decision.verdict, decision.reason, decision.keep_question_id)
                 previous = db.execute("""
