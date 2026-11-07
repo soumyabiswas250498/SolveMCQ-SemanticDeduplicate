@@ -41,7 +41,7 @@ class Decision(BaseModel):
 
 
 class ReviewJob:
-    def __init__(self, report_path: Path, db_path: Path):
+    def __init__(self, report_path: Path, db_path: Path, *, read_only: bool = False):
         self.report = CandidateReport.model_validate_json(report_path.read_bytes())
         seen = set()
         for pair in self.report.pairs:
@@ -59,6 +59,8 @@ class ReviewJob:
         report_json = stable_json(self.report.model_dump(mode="json"))
         self.job_id = hashlib.sha256(report_json.encode("utf-8")).hexdigest()
         self.db_path = db_path
+        if read_only:
+            return
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(db_path)) as db, db:
             db.execute("""
@@ -72,6 +74,19 @@ class ReviewJob:
                     PRIMARY KEY (job_id, pair_id)
                 )
             """)
+
+    def saved_decisions(self):
+        uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as db:
+            return {
+                pair_id: Decision(
+                    pair_id=pair_id, verdict=verdict, reason=reason, keep_question_id=keeper,
+                )
+                for pair_id, verdict, reason, keeper in db.execute("""
+                    SELECT pair_id, verdict, reason, keep_question_id
+                    FROM review_decisions WHERE job_id = ? ORDER BY pair_id
+                """, (self.job_id,))
+            }
 
     def summary(self):
         with closing(sqlite3.connect(self.db_path)) as db:

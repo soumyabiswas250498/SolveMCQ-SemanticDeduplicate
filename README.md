@@ -40,7 +40,7 @@ Exact matches use normalized subject, question, answer, and ordered options when
 
 The defaults of `--threshold 0.70 --top-k 12` are starting values. A record without a candidate can still have an undetected duplicate. Use a new output directory to rerun with different settings.
 
-Phase 1 handles a single batch. Existing MongoDB records can be included through a JSON export. Live MongoDB sync, incremental cross-batch matching, MCP review and final semantic deduplication are future work.
+Phase 1 handles a single batch. Existing MongoDB records can be included through a JSON export. Live MongoDB sync and incremental cross-batch matching are future work.
 
 ## Tests
 
@@ -88,3 +88,29 @@ with the same report and DB to resume. A changed report starts a separate review
 job. Identical retries are safe, and a conflicting final verdict rejects the
 entire submission. A deferred verdict can be resolved later. Decisions apply
 to individual pairs. Applying them to produce the final unique JSON is Phase 3.
+
+## Phase 3 export reviewed questions
+
+From the project directory, use the same original input, subject argument, candidate
+report and SQLite database used in Phases 1 and 2. Reinstall the editable package
+after updating the repository to register the new command.
+
+```sh
+python -m pip install -e '.[review]'
+solvemcq-finalize sample-input.json output/history/review_candidates.json \
+  --subject history --db .solvemcq/reviews.sqlite3 --output output/history-final
+```
+
+The exporter reads existing decisions without regenerating embeddings or writing to
+SQLite. It follows compatible duplicate decisions to one keeper. It retains all
+members of a group when keeper choices are inconsistent, a reviewed pair within
+the group is distinct, or a pending or deferred pair touches the group.
+
+- `unique.json` contains the full retained MCQ records in input order.
+- `duplicates.json` contains each removed record and the final keeper's input row and ID.
+- `unresolved.json` includes full original records, including options, for pending,
+  deferred and blocked cases.
+- `summary.json` reports counts and has `complete: false` while cases remain unresolved.
+
+Use the unresolved report to inspect the full choices. You can save decisions for
+deferred pairs through Phase 2 and export again to a new directory.

@@ -15,6 +15,7 @@ review = ["mcp>=1.30,<2"]
 [project.scripts]
 solvemcq = "solvemcq.cli:main"
 solvemcq-review = "solvemcq.review_server:main"
+solvemcq-finalize = "solvemcq.finalize:main"
 
 [tool.setuptools.packages.find]
 include = ["solvemcq*"]

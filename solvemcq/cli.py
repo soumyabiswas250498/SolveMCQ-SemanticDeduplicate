@@ -60,8 +60,13 @@ def run(args):
             "question_threshold": args.threshold, "top_k": args.top_k, **summary,
         },
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(dir=args.output.parent) as temporary:
+    write_results(args.output, results)
+    print(json.dumps(summary, indent=2))
+
+
+def write_results(output, results):
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=output.parent) as temporary:
         staging = Path(temporary) / "results"
         staging.mkdir()
         for name, data in results.items():
@@ -69,8 +74,7 @@ def run(args):
                 json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
                 encoding="utf-8",
             )
-        staging.rename(args.output)
-    print(json.dumps(summary, indent=2))
+        staging.rename(output)
 
 
 def main():
