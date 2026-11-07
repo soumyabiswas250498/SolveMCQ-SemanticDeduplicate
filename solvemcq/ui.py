@@ -3,9 +3,10 @@ import argparse
 import json
 import logging
 import os
-import subprocess
 import secrets
+import subprocess
 import threading
+import time
 import uuid
 import webbrowser
 from argparse import Namespace
@@ -42,6 +43,7 @@ class LocalWorkflow:
         self.embedding = None
         self.originals = {}
         self.pause_agent = threading.Event()
+        self.agent_checkpoint = None
         path = self.root / "current.json"
         self.state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"status": "empty"}
         if self.state["status"] == "running":
@@ -73,6 +75,17 @@ class LocalWorkflow:
             result = {**self.state}
             if result["status"] == "ready":
                 result["review"] = self.job().summary()
+                pending = result["review"]["pending"]
+                elapsed = result.get("agent_elapsed_seconds", 0)
+                if self.agent_checkpoint is not None:
+                    elapsed += time.monotonic() - self.agent_checkpoint
+                reviewed = result.get("agent_reviewed_pairs", 0)
+                result["review_timing"] = {
+                    "elapsed_seconds": elapsed,
+                    "remaining_seconds": (
+                        pending * result["agent_batch_seconds"] / reviewed if reviewed else None
+                    ),
+                }
             return result
 
     def start(self, data):
@@ -285,6 +298,7 @@ class LocalWorkflow:
             if self.state.get("agent_running"):
                 raise ValueError("Agent review is already running.")
             self.pause_agent.clear()
+            self.agent_checkpoint = time.monotonic()
             self.update(agent_running=True, export=None, message="Connecting to Codex…")
             threading.Thread(target=self.run_agent, args=(path,), daemon=True).start()
             return self.snapshot()
@@ -302,15 +316,28 @@ class LocalWorkflow:
                 with self.lock:
                     self.add_choices(path, candidates)
                 self.update(message=f"Agent review running. {job.summary()['pending']} pairs still to review…")
+                batch_started = time.monotonic()
                 decisions = review_candidates(agent, candidates)
-                job.submit(job.job_id, decisions)
+                saved = job.submit(job.job_id, decisions)["saved"]
+                with self.lock:
+                    now = time.monotonic()
+                    elapsed = self.state.get("agent_elapsed_seconds", 0) + now - self.agent_checkpoint
+                    self.agent_checkpoint = now
+                    self.update(
+                        agent_elapsed_seconds=elapsed,
+                        agent_batch_seconds=self.state.get("agent_batch_seconds", 0) + now - batch_started,
+                        agent_reviewed_pairs=self.state.get("agent_reviewed_pairs", 0) + saved,
+                    )
         except (ValueError, OSError, subprocess.TimeoutExpired) as error:
             message = f"Agent review stopped. {error}"
         except Exception:
             logging.exception("Agent review failed")
             message = "Agent review stopped. Saved decisions are available. See the app window for details."
         finally:
-            self.update(agent_running=False, message=message, export=None)
+            with self.lock:
+                elapsed = self.state.get("agent_elapsed_seconds", 0) + time.monotonic() - self.agent_checkpoint
+                self.agent_checkpoint = None
+                self.update(agent_running=False, message=message, export=None, agent_elapsed_seconds=elapsed)
 
     def stop_agent(self, job_id):
         with self.lock:

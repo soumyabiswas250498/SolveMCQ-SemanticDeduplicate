@@ -116,6 +116,10 @@ class BrowserWorkflowTest(unittest.TestCase):
                 state = wait_for("agent_running", False)
             self.assertEqual(state["review"]["pending"], 0)
             self.assertEqual(state["review"]["needs_review"], 3)
+            self.assertEqual(state["agent_reviewed_pairs"], 3)
+            self.assertGreater(state["review_timing"]["elapsed_seconds"], 0)
+            self.assertEqual(state["review_timing"]["remaining_seconds"], 0)
+            self.assertEqual(LocalWorkflow(workflow.root).snapshot()["review_timing"], state["review_timing"])
 
             pair = workflow.pair(job_id, "needs_review")
             self.assertEqual(pair["previous_reason"], "Unclear scope")

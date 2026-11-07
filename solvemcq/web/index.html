@@ -83,7 +83,9 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
   <section id="review" class="panel" aria-labelledby="review-title" hidden>
     <div class="row"><h2 id="review-title" tabindex="-1">Review matches</h2><button id="new" type="button">Start another batch</button></div>
     <div class="stats" id="stats"></div>
+    <p id="pair-progress" class="sub"></p>
     <progress id="progress" max="1" value="0" aria-label="Pairs reviewed"></progress>
+    <p class="sub" id="agent-timing" hidden></p>
     <p class="sub" id="scan-summary"></p>
     <div class="actions" id="review-method">
       <button id="manual" type="button">Review manually</button>
@@ -178,6 +180,14 @@ function button(text, action, primary = false) {
   return element;
 }
 
+function duration(seconds) {
+  const total = Math.floor(seconds);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor(total / 60) % 60;
+  const remainder = total % 60;
+  return hours ? `${hours}h ${minutes}m` : minutes ? `${minutes}m ${remainder}s` : `${remainder}s`;
+}
+
 function render() {
   const ready = state.status === "ready";
   $("setup").hidden = ready || state.status === "running";
@@ -210,6 +220,16 @@ function render() {
   }));
   $("progress").max = r.candidate_pairs || 1;
   $("progress").value = r.candidate_pairs ? r.candidate_pairs - r.pending : 1;
+  $("pair-progress").textContent = `${r.candidate_pairs - r.pending} of ${r.candidate_pairs} pairs checked · ${r.pending} left`;
+  const timing = state.review_timing;
+  const timingLine = $("agent-timing");
+  timingLine.hidden = !state.agent_running && !timing?.elapsed_seconds;
+  if (timing) {
+    const remaining = r.pending === 0 ? "0s"
+      : timing.remaining_seconds === null ? "Calculating after first batch…"
+      : `About ${duration(Math.ceil(timing.remaining_seconds))}`;
+    timingLine.textContent = `Agent time spent: ${duration(timing.elapsed_seconds)} · Estimated agent time remaining: ${remaining}`;
+  }
   const scan = state.scan;
   $("scan-summary").textContent = `${scan.input_questions} questions checked` +
     (baseline ? "" : ` · ${scan.exact_duplicates} exact repeats`) +
