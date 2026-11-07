@@ -1,0 +1,20 @@
+{
+  "questions": [
+    {
+      "subject": "history",
+      "questionText": "গদর পার্টি কোথায় প্রতিষ্ঠিত হয়?",
+      "options": [
+        {"key": "A", "text": "সান ফ্রান্সিসকো"},
+        {"key": "B", "text": "লন্ডন"},
+        {"key": "C", "text": "দিল্লি"},
+        {"key": "D", "text": "টোকিও"}
+      ],
+      "correctOptionKey": "A"
+    },
+    {
+      "subject": "history",
+      "questionText": "গদর দলের প্রতিষ্ঠাস্থল কোথায়?",
+      "answer": "সান ফ্রান্সিসকো"
+    }
+  ]
+}
