@@ -25,7 +25,7 @@ Accepts a JSON array or an object containing a `questions` array. Each row needs
 - Plain-text `questionText` or `question`.
 - Plain-text `correctAnswer` or `answer`, or an `options` array of `{key, text}` objects and a matching `correctOptionKey`. When both forms are supplied, they must agree.
 
-The CLI accepts one trailing comma at the end of a top-level array of records and reports other malformed JSON. Invalid rows are reported by their one-based position. Use `--subject history` for single-subject history exports without a subject field.
+The CLI rejects malformed JSON, including trailing commas, and reports the line and column. Invalid rows are reported by their one-based position. Use `--subject history` for single-subject history exports without a subject field.
 
 ## Output
 

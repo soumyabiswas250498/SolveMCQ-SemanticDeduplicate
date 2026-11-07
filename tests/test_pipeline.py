@@ -68,13 +68,19 @@ class PipelineTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "export.json"
-            path.write_text("[" + json.dumps(record) + ",\n]", encoding="utf-8")
-            with self.assertWarnsRegex(UserWarning, "trailing comma"):
-                _, questions = load_questions(path, "history")
+            path.write_text(json.dumps([record]), encoding="utf-8")
+            _, questions = load_questions(path, "history")
             self.assertEqual(questions[0].answer, "সঠিক")
             self.assertEqual(questions[0].record, record)
             path.write_text(json.dumps([{**record, "correctAnswer": "ভুল"}]), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "correctAnswer disagrees"):
+                load_questions(path, "history")
+
+    def test_rejects_trailing_comma(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "input.json"
+            path.write_text('[{"question": "Question?", "answer": "Answer"},]', encoding="utf-8")
+            with self.assertRaises(json.JSONDecodeError):
                 load_questions(path, "history")
 
     def test_rejects_missing_answer(self):

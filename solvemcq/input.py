@@ -1,7 +1,5 @@
 import hashlib
 import json
-import re
-import warnings
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -38,20 +36,7 @@ def load_questions(path: Path, default_subject: str | None):
     def reject_constant(value):
         raise ValueError(f"Invalid JSON constant: {value}")
 
-    source = path.read_text(encoding="utf-8-sig")
-    try:
-        records = json.loads(source, parse_constant=reject_constant)
-    except json.JSONDecodeError as error:
-        # Some exports have one comma before the outer array's closing bracket.
-        if (
-            not source.lstrip().startswith("[")
-            or not re.fullmatch(r"\]\s*", source[error.pos:])
-            or not source[:error.pos].rstrip().endswith("},")
-        ):
-            raise
-        prefix = source[:error.pos].rstrip()
-        records = json.loads(prefix[:-1] + "]", parse_constant=reject_constant)
-        warnings.warn("Ignored a trailing comma in the input array.", stacklevel=2)
+    records = json.loads(path.read_text(encoding="utf-8-sig"), parse_constant=reject_constant)
     if isinstance(records, dict):
         records = records.get("questions")
     if not isinstance(records, list) or not records:
