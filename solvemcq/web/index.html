@@ -211,8 +211,8 @@ function render() {
     $("pair-status").textContent = "";
   }
   $("stats").replaceChildren(...[
-    ["To review", r.pending], ["Duplicate pairs", r.duplicates],
-    ["Different", r.distinct], ["Needs your decision", r.needs_review]
+    ["To review", r.pending], ["Recorded duplicate verdicts", r.recorded_duplicate_verdicts ?? r.duplicates],
+    ["Recorded different verdicts", r.recorded_distinct_verdicts ?? r.distinct], ["Needs your decision", r.needs_review]
   ].map(([label, count]) => {
     const item = node("div", undefined, "stat");
     item.append(node("strong", count), label);
@@ -243,9 +243,41 @@ function render() {
       downloads.append(node("p", "Click Preview results again to generate both files."));
       return;
     }
-    downloads.append(node("p", `${summary.retained_questions} kept + ${summary.dropped_questions} dropped = ${summary.input_questions} original questions`));
+    if (summary.review_metrics) {
+      const m = summary.review_metrics;
+      const stats = node("div", undefined, "stats");
+      const count = (label, value) => {
+        const item = node("div", undefined, "stat");
+        item.append(node("strong", value), label);
+        stats.append(item);
+      };
+      const agentUnavailable = m.unattributed_pairs && !m.agent_resolved_pairs && !m.agent_deferred_pairs;
+      count("Pairs resolved by agent", agentUnavailable ? "—" : m.agent_resolved_pairs);
+      count("Agent verdict: duplicate pairs", agentUnavailable ? "—" : m.agent_duplicate_pairs);
+      count("Agent verdict: different pairs", agentUnavailable ? "—" : m.agent_distinct_pairs);
+      count("Pairs sent to manual review by agent", agentUnavailable ? "—" : m.agent_deferred_pairs);
+      count("Dispute groups resolved manually", m.manual_groups_resolved);
+      count("Individual pairs resolved manually", m.manual_pairs_resolved);
+      downloads.append(node("h3", "Review decisions"), stats);
+      if (m.unattributed_pairs) {
+        downloads.append(node("p",
+          `${m.unattributed_pairs} older verdicts have no saved reviewer: ${m.unattributed_duplicate_pairs} duplicate, ${m.unattributed_distinct_pairs} different, ${m.unattributed_deferred_pairs} deferred.`,
+          "sub"));
+      }
+    } else {
+      downloads.append(node("p", "Click Preview results again to generate the review breakdown.", "sub"));
+    }
+    downloads.append(node("h3", "Question export"),
+      node("p", `${summary.retained_questions} ${summary.complete ? "unique" : "provisionally kept"} + ${summary.dropped_questions} dropped = ${summary.input_questions} original questions`));
+    if (summary.previously_excluded_questions) {
+      downloads.append(node("p",
+        `${summary.proposed_archives} newly dropped in this review · ${summary.previously_excluded_questions} already excluded before the scan`,
+        "sub"));
+    }
     if (!summary.complete) {
-      downloads.append(node("p", "Provisional split. Review the remaining disputes for a final result.", "sub"));
+      downloads.append(node("p",
+        `Provisional: ${summary.pending_pairs} pending pairs, ${summary.deferred_pairs} deferred pairs, ${summary.blocked_duplicate_groups} blocked groups.`,
+        "sub"));
     }
     if (state.export.preview && state.export.preview.length) {
       const list = node("details");

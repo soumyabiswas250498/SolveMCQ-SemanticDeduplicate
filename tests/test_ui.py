@@ -137,6 +137,10 @@ class BrowserWorkflowTest(unittest.TestCase):
 
             state = workflow.export(job_id)
             self.assertEqual(state["export"]["summary"]["proposed_archives"], 0)
+            metrics = state["export"]["summary"]["review_metrics"]
+            self.assertEqual(metrics["agent_deferred_pairs"], 3)
+            self.assertEqual(metrics["agent_resolved_pairs"], 0)
+            self.assertEqual(metrics["manual_pairs_resolved"], 3)
             conflict_id = state["export"]["conflicts"][0]["distinct_pair_ids"][0]
             pair = workflow.pair(job_id, "needs_review", conflict=conflict_id)
             workflow.decide(job_id, {
@@ -188,6 +192,8 @@ class BrowserWorkflowTest(unittest.TestCase):
             self.assertEqual(original.summary()["distinct"], 1)
 
     def test_group_keeps_multiple_questions_and_reopens_saved_selection(self):
+        from solvemcq.review import Decision
+
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             workflow = LocalWorkflow(root)
@@ -200,6 +206,7 @@ class BrowserWorkflowTest(unittest.TestCase):
                 {"_id": str(index), "subject": "history", "question": question, "answer": question}
                 for index, question in enumerate(("First A", "First B", "First C", "Second A", "Second B"), 1)
             ]
+            records.append({"_id": "6", "deletedAt": "previously archived"})
             workflow.start({"mode": "baseline", "bank": json.dumps(records)})
             deadline = time.monotonic() + 5
             while workflow.snapshot()["status"] == "running" and time.monotonic() < deadline:
@@ -212,6 +219,12 @@ class BrowserWorkflowTest(unittest.TestCase):
             group_id = next(item["id"] for item in groups if item["size"] == 3)
             group = workflow.dispute_groups(job_id, group_id)
             keep = [item["question_id"] for item in group["questions"] if item["mongo_id"] in {"1", "3"}]
+            pair = workflow.job().describe_pair(group["pairs"][0])
+            job = workflow.job()
+            job.submit(job.job_id, [Decision(
+                pair_id=pair["pair_id"], verdict="duplicate", reason="Agent matched the pair",
+                keep_question_id=pair["question_ids"][0],
+            )], source="agent")
             with self.assertRaisesRegex(ValueError, "Keep at least one"):
                 workflow.save_dispute(job_id, {"group": group_id, "members": group["members"], "keep": []})
             state = workflow.save_dispute(job_id, {
@@ -224,16 +237,21 @@ class BrowserWorkflowTest(unittest.TestCase):
             self.assertEqual(saved["keep"], sorted(keep))
             self.assertEqual(saved["reason"], "Two distinct facts")
             state = workflow.export(job_id)
-            self.assertEqual(state["export"]["summary"]["proposed_archives"], 1)
+            summary = state["export"]["summary"]
+            self.assertEqual(summary["proposed_archives"], 1)
+            self.assertEqual(summary["previously_excluded_questions"], 1)
+            self.assertEqual((summary["retained_questions"], summary["dropped_questions"]), (4, 2))
+            self.assertEqual(summary["review_metrics"]["agent_duplicate_pairs"], 1)
+            self.assertEqual(summary["review_metrics"]["manual_groups_resolved"], 1)
             proposals = json.loads(workflow.download(job_id, "proposed_archives.json"))
             self.assertEqual([item["archive_id"] for item in proposals], ["2"])
             self.assertIn(proposals[0]["keep_id"], {"1", "3"})
-            self.assertEqual(json.loads(workflow.download(job_id, "unique.json")), records[:1] + records[2:])
-            self.assertEqual(json.loads(workflow.download(job_id, "drop.json")), records[1:2])
+            self.assertEqual(json.loads(workflow.download(job_id, "unique.json")), records[:1] + records[2:-1])
+            self.assertEqual(json.loads(workflow.download(job_id, "drop.json")), records[1:2] + records[-1:])
 
             workflow.update(bank_snapshot_full=False)
             with self.assertRaisesRegex(ValueError, "Choose the original bank"):
                 workflow.export(job_id)
             richer_records = [{**item, "explanation": "Preserve this field"} for item in records]
             workflow.export(job_id, json.dumps(richer_records))
-            self.assertEqual(json.loads(workflow.download(job_id, "drop.json")), richer_records[1:2])
+            self.assertEqual(json.loads(workflow.download(job_id, "drop.json")), richer_records[1:2] + richer_records[-1:])

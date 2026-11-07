@@ -123,6 +123,34 @@ class ReviewJob:
             db.execute("BEGIN")
             return self._decisions(db), self._selections(db)
 
+    def export_review_state(self):
+        uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as db:
+            db.execute("BEGIN")
+            decisions, selections = self._decisions(db), self._selections(db)
+            history = []
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name = 'review_attribution'").fetchone():
+                history = db.execute("""
+                    SELECT pair_id, source, verdict FROM review_attribution WHERE job_id = ?
+                """, (self.job_id,)).fetchall()
+        agent = Counter(verdict for _, source, verdict in history if source == "agent")
+        recorded = {pair_id for pair_id, _, _ in history}
+        legacy = Counter(decision.verdict for pair_id, decision in decisions.items() if pair_id not in recorded)
+        metrics = {
+            "agent_resolved_pairs": agent["duplicate"] + agent["distinct"],
+            "agent_duplicate_pairs": agent["duplicate"],
+            "agent_distinct_pairs": agent["distinct"],
+            "agent_deferred_pairs": agent["needs_review"],
+            "manual_groups_resolved": len(selections),
+            "manual_pairs_resolved": sum(source == "manual" and verdict != "needs_review"
+                                         for _, source, verdict in history),
+            "unattributed_pairs": sum(legacy.values()),
+            "unattributed_duplicate_pairs": legacy["duplicate"],
+            "unattributed_distinct_pairs": legacy["distinct"],
+            "unattributed_deferred_pairs": legacy["needs_review"],
+        }
+        return decisions, selections, metrics
+
     def summary(self):
         decisions, selections = self.review_state()
         covered = {pair_id for item in selections.values() for pair_id in item["pairs"]}
@@ -136,6 +164,8 @@ class ReviewJob:
             "duplicates": counts["duplicate"],
             "distinct": counts["distinct"],
             "needs_review": counts["needs_review"],
+            "recorded_duplicate_verdicts": sum(item.verdict == "duplicate" for item in decisions.values()),
+            "recorded_distinct_verdicts": sum(item.verdict == "distinct" for item in decisions.values()),
         }
         if covered:
             result["resolved_by_selection"] = len(covered)
@@ -243,7 +273,8 @@ class ReviewJob:
             "previous_reason": reason,
         }
 
-    def submit(self, job_id: str, decisions: list[Decision], *, replace: Decision | None = None):
+    def submit(self, job_id: str, decisions: list[Decision], *, replace: Decision | None = None,
+               source: Literal["agent", "manual"] | None = None):
         if job_id != self.job_id:
             raise ValueError("Job ID does not match the current report. Fetch a new review batch.")
         seen = set()
@@ -268,6 +299,13 @@ class ReviewJob:
         with closing(sqlite3.connect(self.db_path)) as db, db:
             db.execute("BEGIN IMMEDIATE")
             saved_members = {question for item in self._selections(db).values() for question in item["members"]}
+            if source:
+                db.execute("""
+                    CREATE TABLE IF NOT EXISTS review_attribution (
+                        job_id TEXT NOT NULL, pair_id INTEGER NOT NULL, source TEXT NOT NULL,
+                        verdict TEXT NOT NULL, PRIMARY KEY (job_id, pair_id, source)
+                    )
+                """)
             for decision in decisions:
                 if saved_members.intersection(self.report.pairs[decision.pair_id - 1].question_ids):
                     raise ValueError("This pair is covered by a saved group selection. Edit it in the browser.")
@@ -294,5 +332,10 @@ class ReviewJob:
                         keep_question_id = excluded.keep_question_id,
                         updated_at = CURRENT_TIMESTAMP
                 """, (*key, *value))
+                if source:
+                    db.execute("""
+                        INSERT INTO review_attribution VALUES (?, ?, ?, ?)
+                        ON CONFLICT (job_id, pair_id, source) DO UPDATE SET verdict = excluded.verdict
+                    """, (*key, source, decision.verdict))
                 saved += 1
         return {"job_id": self.job_id, "saved": saved, "already_saved": len(decisions) - saved}

@@ -5,6 +5,7 @@ from collections import defaultdict
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 
+from .bank import EXCLUDED_STATUSES
 from .cli import write_results
 from .input import load_questions
 from .pipeline import split_exact
@@ -47,7 +48,7 @@ def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only
                     "kept_mongo_id_type": item.mongo_id_type, "kept_input_row": None}
         return {"kept_id": question_id, "kept_input_row": by_id[question_id].row}
 
-    removed_to_keeper, evidence, unresolved, conflicts, held = reconcile(job, describe, existing)
+    removed_to_keeper, evidence, unresolved, conflicts, held, metrics = reconcile(job, describe, existing)
     semantic = [
         {"type": "semantic", "removed_id": item, "input_row": by_id[item].row,
          "record": by_id[item].record, **keeper_fields(keeper), "duplicate_pair_ids": evidence[item]}
@@ -67,6 +68,7 @@ def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only
     unique, drop = partition_records([item.record for item in questions], drop_rows)
     summary = {
         "job_id": job.job_id,
+        "review_metrics": metrics,
         "input_questions": len(questions),
         "retained_questions": len(unique),
         "dropped_questions": len(drop),
@@ -100,7 +102,7 @@ def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only
 
 
 def reconcile(job, describe, protected_ids=()):
-    decisions, selections = job.review_state()
+    decisions, selections, metrics = job.export_review_state()
     covered = {pair_id for item in selections.values() for pair_id in item["pairs"]}
     if any(pair_id > len(job.report.pairs) for pair_id in decisions):
         raise ValueError("Review database contains an unknown pair ID for this report")
@@ -201,7 +203,7 @@ def reconcile(job, describe, protected_ids=()):
             keeper = max(keep, key=lambda other: scores.get(frozenset((item, other)), -2))
             removed_to_keeper[item] = keeper
             evidence[item] = selection["pairs"]
-    return removed_to_keeper, evidence, unresolved, conflicts, held
+    return removed_to_keeper, evidence, unresolved, conflicts, held, metrics
 
 
 def partition_records(records, drop_rows):
@@ -221,7 +223,7 @@ def export_baseline(job, output, bank_source):
     def describe(question_id):
         return {"question_id": question_id, **questions[question_id].model_dump(exclude_none=True)}
 
-    removed, evidence, unresolved, conflicts, _ = reconcile(job, describe)
+    removed, evidence, unresolved, conflicts, _, metrics = reconcile(job, describe)
     proposals = [
         {"archive_id": questions[item].mongo_id, "archive_id_type": questions[item].mongo_id_type,
          "keep_id": questions[keeper].mongo_id, "keep_id_type": questions[keeper].mongo_id_type,
@@ -242,9 +244,18 @@ def export_baseline(job, output, bank_source):
     archive_ids = {(item["archive_id"], item["archive_id_type"]) for item in proposals}
     if not archive_ids <= bank_rows.keys():
         raise ValueError("Some proposed archive IDs are missing from the original bank.")
-    unique, drop = partition_records(raw_records, {bank_rows[item] for item in archive_ids})
+    previously_excluded = {
+        row for row, item in enumerate(documents, 1)
+        if item.get("deletedAt") is not None or item.get("operationalStatus") in EXCLUDED_STATUSES
+    }
+    archive_rows = {bank_rows[item] for item in archive_ids}
+    if previously_excluded & archive_rows:
+        raise ValueError("A proposed archive was already excluded from the bank snapshot.")
+    unique, drop = partition_records(raw_records, previously_excluded | archive_rows)
     summary = {
+        "review_metrics": metrics,
         "proposed_archives": len(proposals),
+        "previously_excluded_questions": len(previously_excluded),
         "input_questions": len(documents),
         "retained_questions": len(unique),
         "dropped_questions": len(drop),

@@ -318,7 +318,7 @@ class LocalWorkflow:
                 self.update(message=f"Agent review running. {job.summary()['pending']} pairs still to review…")
                 batch_started = time.monotonic()
                 decisions = review_candidates(agent, candidates)
-                saved = job.submit(job.job_id, decisions)["saved"]
+                saved = job.submit(job.job_id, decisions, source="agent")["saved"]
                 with self.lock:
                     now = time.monotonic()
                     elapsed = self.state.get("agent_elapsed_seconds", 0) + now - self.agent_checkpoint
@@ -368,7 +368,7 @@ class LocalWorkflow:
                 if data["conflict"] != decision.pair_id or decision.pair_id not in self.conflict_ids():
                     raise ValueError("Preview results again to revise this conflict.")
                 previous = job.saved_decisions()[decision.pair_id]
-            job.submit(job.job_id, [decision], replace=previous)
+            job.submit(job.job_id, [decision], replace=previous, source="manual")
             self.update(export=None)
             return self.snapshot()
 
