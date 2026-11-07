@@ -13,10 +13,12 @@ Verdict = Literal["duplicate", "distinct", "needs_review"]
 
 
 class CandidateQuestion(BaseModel):
-    input_row: int
+    input_row: int | None
     subject: str
     question: str
     answer: str
+    mongo_id: str | None = None
+    mongo_id_type: Literal["ObjectId", "str"] | None = None
 
 
 class CandidatePair(BaseModel):
@@ -27,7 +29,7 @@ class CandidatePair(BaseModel):
 
 
 class CandidateReport(BaseModel):
-    schema_version: Literal[1]
+    schema_version: Literal[1, 2]
     batch_id: str
     questions: dict[str, CandidateQuestion]
     pairs: list[CandidatePair]
@@ -43,6 +45,14 @@ class Decision(BaseModel):
 class ReviewJob:
     def __init__(self, report_path: Path, db_path: Path, *, read_only: bool = False):
         self.report = CandidateReport.model_validate_json(report_path.read_bytes())
+        for question in self.report.questions.values():
+            has_mongo_id = question.mongo_id is not None
+            if (
+                has_mongo_id != (question.input_row is None)
+                or has_mongo_id != (question.mongo_id_type is not None)
+                or (has_mongo_id and self.report.schema_version != 2)
+            ):
+                raise ValueError("Candidate question has invalid source metadata")
         seen = set()
         for pair in self.report.pairs:
             left, right = pair.question_ids
@@ -56,7 +66,9 @@ class ReviewJob:
             seen.add(key)
 
         # A changed candidate set must never inherit decisions for positional pair IDs.
-        report_json = stable_json(self.report.model_dump(mode="json"))
+        report_json = stable_json(self.report.model_dump(
+            mode="json", exclude_none=self.report.schema_version == 1,
+        ))
         self.job_id = hashlib.sha256(report_json.encode("utf-8")).hexdigest()
         self.db_path = db_path
         if read_only:
@@ -118,7 +130,7 @@ class ReviewJob:
                 "pair_id": pair_id,
                 **pair.model_dump(mode="json"),
                 "questions": [
-                    {"question_id": question_id, **self.report.questions[question_id].model_dump()}
+                    {"question_id": question_id, **self.report.questions[question_id].model_dump(exclude_none=True)}
                     for question_id in pair.question_ids
                 ],
                 "previous_reason": reason,
@@ -139,6 +151,12 @@ class ReviewJob:
             if decision.verdict == "duplicate":
                 if decision.keep_question_id not in pair.question_ids:
                     raise ValueError(f"Pair {decision.pair_id} requires a keeper from that pair")
+                existing = [
+                    item for item in pair.question_ids
+                    if self.report.questions[item].mongo_id is not None
+                ]
+                if len(existing) == 1 and decision.keep_question_id != existing[0]:
+                    raise ValueError(f"Pair {decision.pair_id} must keep the existing MongoDB question")
             elif decision.keep_question_id is not None:
                 raise ValueError("Only a duplicate verdict can name a keeper")
 

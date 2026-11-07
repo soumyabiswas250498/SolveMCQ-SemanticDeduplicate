@@ -11,11 +11,13 @@ dependencies = ["qdrant-client>=1.14,<2"]
 [project.optional-dependencies]
 embeddings = ["sentence-transformers>=3,<6"]
 review = ["mcp>=1.30,<2"]
+bank = ["pymongo>=4.10,<5"]
 
 [project.scripts]
 solvemcq = "solvemcq.cli:main"
 solvemcq-review = "solvemcq.review_server:main"
 solvemcq-finalize = "solvemcq.finalize:main"
+solvemcq-bank = "solvemcq.bank:main"
 
 [tool.setuptools.packages.find]
 include = ["solvemcq*"]

@@ -21,12 +21,31 @@ def finalize(input_path, report_path, db_path, output, subject):
     job = ReviewJob(report_path, db_path, read_only=True)
     if job.report.batch_id != batch_id:
         raise ValueError("Candidate report does not match the input and subject used in Phase 1")
+    existing = {
+        question_id: item for question_id, item in job.report.questions.items()
+        if item.mongo_id is not None
+    }
     for question_id, item in job.report.questions.items():
+        if question_id in existing:
+            continue
         original = by_id.get(question_id)
         if original is None or (item.input_row, item.subject, item.question, item.answer) != (
             original.row, original.subject, original.text, original.answer,
         ):
             raise ValueError(f"Candidate question does not match the original input: {question_id}")
+
+    def describe(question_id):
+        if question_id in existing:
+            return {"question_id": question_id, **existing[question_id].model_dump(exclude_none=True)}
+        item = by_id[question_id]
+        return {"question_id": question_id, "input_row": item.row, "record": item.record}
+
+    def keeper_fields(question_id):
+        if question_id in existing:
+            item = existing[question_id]
+            return {"kept_id": question_id, "kept_mongo_id": item.mongo_id,
+                    "kept_mongo_id_type": item.mongo_id_type, "kept_input_row": None}
+        return {"kept_id": question_id, "kept_input_row": by_id[question_id].row}
 
     decisions = job.saved_decisions()
     if any(pair_id > len(job.report.pairs) for pair_id in decisions):
@@ -49,11 +68,7 @@ def finalize(input_path, report_path, db_path, output, subject):
                 "pair_id": pair_id,
                 "status": decision.verdict if decision else "pending",
                 "reason": decision.reason if decision else None,
-                "questions": [
-                    {"question_id": question_id, "input_row": by_id[question_id].row,
-                     "record": by_id[question_id].record}
-                    for question_id in pair.question_ids
-                ],
+                "questions": [describe(question_id) for question_id in pair.question_ids],
             })
         elif decision.verdict == "distinct":
             distinct_pairs[left][right] = pair_id
@@ -71,6 +86,7 @@ def finalize(input_path, report_path, db_path, output, subject):
     semantic = []
     conflicts = []
     visited = set()
+    held = set(blocked)
     for start in neighbors:
         if start in visited:
             continue
@@ -90,6 +106,9 @@ def finalize(input_path, report_path, db_path, output, subject):
         pair_ids = sorted({pair_id for item in component for pair_id in duplicate_pairs[item]})
         keepers = [item for item in component if not keep_targets[item]]
         reasons = []
+        existing_members = component.intersection(existing)
+        if existing_members and (len(existing_members) != 1 or keepers != list(existing_members)):
+            reasons.append("Group does not resolve to exactly one existing MongoDB keeper")
         if pending_ids:
             reasons.append("Touches an unresolved pair")
         if distinct_ids:
@@ -102,12 +121,12 @@ def finalize(input_path, report_path, db_path, output, subject):
             reasons.append("Keeper decisions form a cycle")
 
         if reasons:
+            held.update(component)
             conflicts.append({
                 "reasons": reasons, "duplicate_pair_ids": pair_ids,
                 "distinct_pair_ids": distinct_ids, "unresolved_pair_ids": pending_ids,
                 "questions": [
-                    {"question_id": item, "input_row": by_id[item].row, "record": by_id[item].record}
-                    for item in sorted(component, key=lambda item: by_id[item].row)
+                    describe(item) for item in sorted(component)
                 ],
             })
             continue
@@ -117,15 +136,15 @@ def finalize(input_path, report_path, db_path, output, subject):
             removed_to_keeper[item] = keeper
             semantic.append({
                 "type": "semantic", "removed_id": item, "input_row": by_id[item].row,
-                "record": by_id[item].record, "kept_id": keeper,
-                "kept_input_row": by_id[keeper].row, "duplicate_pair_ids": pair_ids,
+                "record": by_id[item].record, **keeper_fields(keeper),
+                "duplicate_pair_ids": pair_ids,
             })
 
     duplicates = semantic.copy()
     for item in exact:
         keeper = removed_to_keeper.get(item["kept_id"], item["kept_id"])
         duplicates.append({
-            **item, "type": "exact", "kept_id": keeper, "kept_input_row": by_id[keeper].row,
+            **item, "type": "exact", **keeper_fields(keeper),
         })
     duplicates.sort(key=lambda item: item["input_row"])
     unique = [item.record for item in retained if item.id not in removed_to_keeper]
@@ -140,11 +159,20 @@ def finalize(input_path, report_path, db_path, output, subject):
         "blocked_duplicate_groups": len(conflicts),
         "complete": not unresolved and not conflicts,
     }
-    write_results(output, {
+    results = {
         "unique.json": unique, "duplicates.json": duplicates,
         "unresolved.json": {"pairs": unresolved, "blocked_duplicate_groups": conflicts},
         "summary.json": summary,
-    })
+    }
+    if job.report.schema_version == 2:
+        ready = [
+            item.record for item in retained
+            if item.id not in removed_to_keeper and item.id not in held
+        ]
+        results["import_ready.json"] = ready
+        summary["import_ready_questions"] = len(ready)
+        summary["held_questions"] = len(unique) - len(ready)
+    write_results(output, results)
     return summary
 
 

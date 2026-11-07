@@ -1,0 +1,165 @@
+import argparse
+import json
+import os
+import re
+import uuid
+from pathlib import Path
+
+from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import ApiException
+
+from .input import parse_question, stable_json
+from .pipeline import candidate_pair, embedder, find_candidates, index_questions, query_neighbors
+
+
+def bank_collection(name):
+    if not re.fullmatch(r"[a-z0-9_-]{1,60}", name):
+        raise ValueError("Bank name must use lowercase letters, digits, hyphens or underscores")
+    return f"solvemcq_bank_bge_m3_v1_{name}"
+
+
+def read_bank(collection):
+    from bson import ObjectId
+    from pymongo import ASCENDING
+
+    questions = []
+    metadata = {}
+    projection = dict.fromkeys((
+        "_id", "subjectId", "subject", "questionText", "question", "options",
+        "correctOptionKey", "correctAnswer", "answer",
+    ), 1)
+    query = {"deletedAt": None, "operationalStatus": {"$nin": ["archived", "inactive"]}}
+    for row, document in enumerate(collection.find(query, projection).sort("_id", ASCENDING), 1):
+        mongo_id = document.pop("_id")
+        try:
+            if not isinstance(mongo_id, (ObjectId, str)):
+                raise ValueError("expected a string or ObjectId _id")
+            source = {"mongo_id": str(mongo_id), "mongo_id_type": type(mongo_id).__name__}
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{collection.full_name}:{stable_json(source)}"))
+            if isinstance(document.get("subjectId"), ObjectId):
+                document["subjectId"] = str(document["subjectId"])
+            question = parse_question(document, row, None, point_id)
+        except ValueError as error:
+            raise ValueError(f"MongoDB question {mongo_id}: {error}") from error
+        questions.append(question)
+        metadata[point_id] = source
+    return questions, metadata
+
+
+def sync_bank(client, name, questions, metadata, dimension, encode, batch_size, allow_empty=False):
+    if not questions and not allow_empty:
+        raise ValueError("MongoDB returned zero eligible questions. Verify the source or use --allow-empty.")
+    collection = bank_collection(name)
+
+    def payload(item):
+        return {
+            "subject": item.subject, "question": item.text, "answer": item.answer,
+            **metadata[item.id],
+        }
+
+    index_questions(client, collection, questions, dimension, encode, batch_size, payload)
+    live = {question.id for question in questions}
+    offset = None
+    stale = []
+    while True:
+        points, offset = client.scroll(
+            collection, offset=offset, limit=256, with_payload=False, with_vectors=False,
+        )
+        stale.extend(point.id for point in points if point.id not in live)
+        if offset is None:
+            break
+    for start in range(0, len(stale), 256):
+        client.delete(
+            collection, points_selector=models.PointIdsList(points=stale[start:start + 256]), wait=True,
+        )
+    return {"bank": name, "indexed_questions": len(live), "removed_stale_points": len(stale)}
+
+
+def compare_bank(client, batch_collection, name, questions, top_k, threshold):
+    collection = bank_collection(name)
+    if not client.collection_exists(collection):
+        raise ValueError(f"Bank {name!r} is missing. Run solvemcq-bank first.")
+    missing_subjects = [
+        subject for subject in sorted({item.subject for item in questions})
+        if not client.count(
+            collection, count_filter=models.Filter(must=[models.FieldCondition(
+                key="subject", match=models.MatchValue(value=subject),
+            )]),
+        ).count
+    ]
+    pairs = []
+    bank_questions = {}
+    for question in questions:
+        vectors = client.retrieve(
+            batch_collection, [question.id], with_payload=False, with_vectors=True,
+        )[0].vector
+        hits = query_neighbors(
+            client, collection, question, vectors["question"], top_k, threshold, with_payload=True,
+        )
+        for hit in hits:
+            item = hit.payload
+            bank_questions[hit.id] = {"input_row": None, **item}
+            pairs.append(candidate_pair(
+                (question.id, hit.id), question.answer, item["answer"], vectors["answer"], hit,
+            ))
+    return pairs, bank_questions, missing_subjects
+
+
+def main():
+    from pymongo import MongoClient
+    from pymongo.errors import PyMongoError
+
+    parser = argparse.ArgumentParser(description="Sync a MongoDB test question bank to Qdrant.")
+    parser.add_argument("--database", required=True)
+    parser.add_argument("--collection", default="questions")
+    parser.add_argument("--bank", required=True, help="Dedicated Qdrant bank name")
+    parser.add_argument("--index-path", type=Path, default=Path(".solvemcq/qdrant"))
+    parser.add_argument("--qdrant-url")
+    parser.add_argument("--device")
+    parser.add_argument("--allow-empty", action="store_true")
+    parser.add_argument("--baseline-report", type=Path, help="Write candidate pairs within the bank")
+    args = parser.parse_args()
+    try:
+        bank_collection(args.bank)
+        if args.baseline_report and args.baseline_report.exists():
+            raise ValueError("Baseline report already exists. Choose a new path.")
+        uri = os.getenv("SOLVEMCQ_MONGO_URI", "mongodb://127.0.0.1:27018")
+        with MongoClient(uri, serverSelectionTimeoutMS=5000) as mongo:
+            questions, metadata = read_bank(mongo[args.database][args.collection])
+        if not questions and not args.allow_empty:
+            raise ValueError("MongoDB returned zero eligible questions. Verify the source or use --allow-empty.")
+        dimension, encode = embedder(args.device)
+        client = (
+            QdrantClient(url=args.qdrant_url, api_key=os.getenv("QDRANT_API_KEY"))
+            if args.qdrant_url else QdrantClient(path=str(args.index_path))
+        )
+        try:
+            summary = sync_bank(client, args.bank, questions, metadata, dimension, encode, 16, args.allow_empty)
+            if args.baseline_report:
+                pairs = find_candidates(client, bank_collection(args.bank), questions, 12, 0.70)
+                flagged = {question_id for pair in pairs for question_id in pair["question_ids"]}
+                data = {
+                    "schema_version": 2,
+                    "batch_id": f"bank:{args.bank}",
+                    "questions": {
+                        item.id: {
+                            "input_row": None, "subject": item.subject, "question": item.text,
+                            "answer": item.answer, **metadata[item.id],
+                        }
+                        for item in questions if item.id in flagged
+                    },
+                    "pairs": pairs,
+                }
+                args.baseline_report.parent.mkdir(parents=True, exist_ok=True)
+                with args.baseline_report.open("x", encoding="utf-8") as output:
+                    json.dump(data, output, ensure_ascii=False, indent=2)
+                summary["candidate_pairs"] = len(pairs)
+        finally:
+            client.close()
+    except (ImportError, OSError, ValueError, PyMongoError, ApiException) as error:
+        parser.exit(1, f"Error: {error}\n")
+    print(json.dumps(summary, indent=2))
+
+
+if __name__ == "__main__":
+    main()

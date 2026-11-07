@@ -40,7 +40,7 @@ Exact matches use normalized subject, question, answer, and ordered options when
 
 The defaults of `--threshold 0.70 --top-k 12` are starting values. A record without a candidate can still have an undetected duplicate. Use a new output directory to rerun with different settings.
 
-Phase 1 handles a single batch. Existing MongoDB records can be included through a JSON export. Live MongoDB sync and incremental cross-batch matching are future work.
+Phase 1 handles a single batch. Existing MongoDB records can be included through a JSON export. Phase 4 adds opt-in cross-batch matching and manual MongoDB-to-Qdrant reconciliation.
 
 ## Tests
 
@@ -114,3 +114,55 @@ the group is distinct, or a pending or deferred pair touches the group.
 
 Use the unresolved report to inspect the full choices. You can save decisions for
 deferred pairs through Phase 2 and export again to a new directory.
+
+## Phase 4 test against a local MongoDB question bank
+
+The bank workflow reads MongoDB and writes a dedicated Qdrant collection.
+Use one bank name per MongoDB source. Run sync and batch matching sequentially.
+After an import, edit, or archive in the test database, rerun sync before checking
+another batch. Sync scans eligible documents and embeds only new or changed
+index payloads. Archived, inactive, soft-deleted, and removed records are
+pruned from the index. A failed sync can be retried before matching.
+
+Start a disposable MongoDB container, bound to your own machine:
+
+```sh
+docker run -d --name solvemcq-mongo-test \
+  -p 127.0.0.1:27018:27017 -v solvemcq-mongo-test:/data/db \
+  mongodb/mongodb-community-server:latest
+```
+
+Connect MongoDB Compass to `mongodb://127.0.0.1:27018` and import a small
+Extended JSON sample into `solvemcq_test.questions`. Preserve the MongoDB
+`_id` and `subjectId` values. The current adapter expects the same flat
+question and option fields as Phase 1 and filters on `deletedAt` and
+`operationalStatus`. Verify those fields against your real schema before
+expanding the test. If you already have a separate local MongoDB, point
+`SOLVEMCQ_MONGO_URI` at that instance.
+
+```sh
+python -m pip install -e '.[embeddings,review,bank]'
+solvemcq-bank --database solvemcq_test --bank local-test \
+  --baseline-report output/baseline/review_candidates.json
+solvemcq incoming.json --bank local-test --output output/incoming
+```
+
+For an incoming single-subject batch without `subjectId`, add
+`--subject <actual-subject-id>` to the comparison and export commands.
+The incoming batch and the bank must use the same subject identifier. Check
+`bank_subjects_without_records` in the comparison summary for mismatches.
+For review, point `solvemcq-review` at the incoming report as in Phase 2.
+The optional baseline report can be reviewed separately as an audit of
+existing records. It is not an incoming import batch.
+
+Then run:
+
+```sh
+solvemcq-finalize incoming.json output/incoming/review_candidates.json \
+  --output output/incoming-final
+```
+
+`import_ready.json` contains retained incoming records after excluding deferred,
+pending and blocked cases. Cross-bank duplicates link to the existing MongoDB
+ID in `duplicates.json`. Import separately through your normal app workflow
+after reviewing the files. The pipeline itself makes no MongoDB writes.

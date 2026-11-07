@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 
 from qdrant_client import QdrantClient
 
+from .bank import compare_bank
 from .input import load_questions
 from .pipeline import MODEL, embedder, find_candidates, index_questions, split_exact
 
@@ -23,13 +24,24 @@ def run(args):
         QdrantClient(url=args.qdrant_url, api_key=os.getenv("QDRANT_API_KEY"))
         if args.qdrant_url else QdrantClient(path=str(args.index_path))
     )
+    bank_name = getattr(args, "bank", None)
+    bank_questions = {}
     try:
         index_questions(client, collection, retained, dimension, encode, args.batch_size)
         pairs = find_candidates(client, collection, retained, args.top_k, args.threshold)
+        if bank_name:
+            cross_pairs, bank_questions, missing_subjects = compare_bank(
+                client, collection, bank_name, retained, args.top_k, args.threshold,
+            )
+            pairs.extend(cross_pairs)
+            pairs.sort(key=lambda pair: (-pair["question_score"], pair["question_ids"]))
     finally:
         client.close()
 
-    review_ids = {question_id for pair in pairs for question_id in pair["question_ids"]}
+    review_ids = {
+        question_id for pair in pairs for question_id in pair["question_ids"]
+        if question_id not in bank_questions
+    }
     summary = {
         "input_questions": len(questions),
         "exact_duplicates": len(duplicates),
@@ -38,13 +50,19 @@ def run(args):
         "candidate_pairs": len(pairs),
         "retained_without_candidate": len(retained) - len(review_ids),
     }
+    if bank_name:
+        summary.update({
+            "bank": bank_name,
+            "bank_candidate_pairs": len(cross_pairs),
+            "bank_subjects_without_records": missing_subjects,
+        })
     results = {
         "retained.json": [item.record for item in retained],
         "exact_duplicates.json": duplicates,
         "review_candidates.json": {
-            "schema_version": 1,
+            "schema_version": 2 if bank_name else 1,
             "batch_id": batch_id,
-            "questions": {
+            "questions": bank_questions | {
                 item.id: {
                     "input_row": item.row,
                     "subject": item.subject,
@@ -84,6 +102,7 @@ def main():
     parser.add_argument("--subject", help="Default subject for rows without subjectId or subject")
     parser.add_argument("--index-path", type=Path, default=Path(".solvemcq/qdrant"))
     parser.add_argument("--qdrant-url", help="Use an existing Qdrant server instead of embedded storage")
+    parser.add_argument("--bank", help="Compare against a synced MongoDB bank as well")
     parser.add_argument("--device", help="Embedding device, for example cpu, mps or cuda")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--top-k", type=int, default=12)
