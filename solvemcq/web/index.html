@@ -126,6 +126,10 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
   <section id="results" class="panel" aria-labelledby="results-title" hidden>
     <h2 id="results-title">Download results</h2>
     <p id="results-note" class="sub">Questions still under review and questions already in your bank are held out of the ready file.</p>
+    <label id="original-bank-label" hidden>Original bank export
+      <small>Choose your original bank JSON once to include all fields from this older review.</small>
+      <input id="original-bank" type="file" accept=".json,application/json">
+    </label>
     <div class="actions"><button type="button" id="export" class="primary">Preview results</button></div>
     <div id="downloads" class="result" aria-live="polite"></div>
   </section>
@@ -185,9 +189,8 @@ function render() {
   const r = state.review;
   const baseline = state.mode === "baseline";
   $("review-title").textContent = baseline ? "Review existing bank" : "Review new questions";
-  $("results-note").textContent = baseline
-    ? "Preview the proposed archive list. This app saves a report only."
-    : "Unresolved questions and questions already in your bank stay out of the ready file.";
+  $("results-note").textContent = "Every original question goes into either unique.json or drop.json. Unresolved questions stay in unique.json until you decide.";
+  $("original-bank-label").hidden = !baseline || !!state.bank_snapshot_full;
   $("review-list").hidden = $("review-workspace").hidden = !manual || !!state.agent_running;
   $("manual").hidden = !!state.agent_running;
   $("agent").hidden = !!state.agent_running || r.pending === 0;
@@ -198,7 +201,7 @@ function render() {
     $("pair-status").textContent = "";
   }
   $("stats").replaceChildren(...[
-    ["To review", r.pending], ["Same question", r.duplicates],
+    ["To review", r.pending], ["Duplicate pairs", r.duplicates],
     ["Different", r.distinct], ["Needs your decision", r.needs_review]
   ].map(([label, count]) => {
     const item = node("div", undefined, "stat");
@@ -216,9 +219,14 @@ function render() {
   downloads.replaceChildren();
   if (state.export) {
     const summary = state.export.summary;
-    downloads.append(node("p", baseline
-      ? `${summary.proposed_archives} proposed archives · ${summary.blocked_duplicate_groups} blocked groups`
-      : `${summary.import_ready_questions} questions ready · ${summary.held_questions} held back`));
+    if (summary.dropped_questions === undefined) {
+      downloads.append(node("p", "Click Preview results again to generate both files."));
+      return;
+    }
+    downloads.append(node("p", `${summary.retained_questions} kept + ${summary.dropped_questions} dropped = ${summary.input_questions} original questions`));
+    if (!summary.complete) {
+      downloads.append(node("p", "Provisional split. Review the remaining disputes for a final result.", "sub"));
+    }
     if (state.export.preview && state.export.preview.length) {
       const list = node("details");
       list.append(node("summary", "See proposed keep and archive decisions"));
@@ -250,13 +258,15 @@ function render() {
       downloads.append(list);
     }
     const links = node("div", undefined, "actions");
-    const files = baseline ? [
+    const files = [
+      ["unique.json", "Download unique.json"], ["drop.json", "Download drop.json"],
+      ...(baseline ? [
       ["proposed_archives.json", "Download proposed archives"], ["unresolved.json", "Still to review"],
       ["summary.json", "Summary"]
     ] : [
       ["import_ready.json", "Download ready questions"], ["duplicates.json", "Duplicates"],
       ["unresolved.json", "Still to review"], ["already_in_bank.json", "Already in bank"], ["summary.json", "Summary"]
-    ];
+    ])];
     for (const [file, label] of files) {
       if (file === "already_in_bank.json" && !state.scan.bank) continue;
       const link = node("a", label, file === files[0][0] ? "button primary" : "button");
@@ -439,7 +449,11 @@ for (const [id, filter] of [["pending", "pending"], ["deferred", "needs_review"]
 }
 $("previous").onclick = () => moveDispute(-1);
 $("next").onclick = () => moveDispute(1);
-$("export").onclick = () => attempt(async () => { state = await api("export", {job: state.id}); render(); });
+$("export").onclick = () => attempt(async () => {
+  const original = $("original-bank").files[0];
+  state = await api("export", {job: state.id, original_bank: original ? await original.text() : undefined});
+  render();
+});
 $("new").onclick = () => {
   $("setup").hidden = false;
   $("review").hidden = $("results").hidden = true;

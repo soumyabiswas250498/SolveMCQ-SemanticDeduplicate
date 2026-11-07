@@ -66,6 +66,8 @@ class BrowserWorkflowTest(unittest.TestCase):
                     state = call("/api/export", {"job": job})
                     self.assertEqual(state["export"]["summary"]["already_in_bank_questions"], 1)
                     self.assertEqual(call(f"/api/download?job={job}&file=import_ready.json"), incoming[1:])
+                    self.assertEqual(call(f"/api/download?job={job}&file=unique.json"), incoming[1:])
+                    self.assertEqual(call(f"/api/download?job={job}&file=drop.json"), incoming[:1])
                 finally:
                     server.shutdown()
                     thread.join()
@@ -222,3 +224,12 @@ class BrowserWorkflowTest(unittest.TestCase):
             proposals = json.loads(workflow.download(job_id, "proposed_archives.json"))
             self.assertEqual([item["archive_id"] for item in proposals], ["2"])
             self.assertIn(proposals[0]["keep_id"], {"1", "3"})
+            self.assertEqual(json.loads(workflow.download(job_id, "unique.json")), records[:1] + records[2:])
+            self.assertEqual(json.loads(workflow.download(job_id, "drop.json")), records[1:2])
+
+            workflow.update(bank_snapshot_full=False)
+            with self.assertRaisesRegex(ValueError, "Choose the original bank"):
+                workflow.export(job_id)
+            richer_records = [{**item, "explanation": "Preserve this field"} for item in records]
+            workflow.export(job_id, json.dumps(richer_records))
+            self.assertEqual(json.loads(workflow.download(job_id, "drop.json")), richer_records[1:2])

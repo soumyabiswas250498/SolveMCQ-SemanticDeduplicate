@@ -27,6 +27,7 @@ from .review import Decision, ReviewJob
 
 MAX_UPLOAD = 32 * 1024 * 1024
 DOWNLOADS = {
+    "unique.json", "drop.json",
     "import_ready.json", "duplicates.json", "unresolved.json", "summary.json", "already_in_bank.json",
     "proposed_archives.json",
 }
@@ -120,11 +121,12 @@ class LocalWorkflow:
                 try:
                     uri = os.getenv("SOLVEMCQ_MONGO_URI", "mongodb://127.0.0.1:27018")
                     with MongoClient(uri, serverSelectionTimeoutMS=5000) as mongo:
-                        docs = list(mongo[database].questions.find({}, {
+                        fields = None if self.state["mode"] == "baseline" else {
                             "_id": 1, "subjectId": 1, "subject": 1, "questionText": 1, "question": 1,
                             "options": 1, "correctOptionKey": 1, "correctAnswer": 1, "answer": 1,
                             "operationalStatus": 1, "deletedAt": 1,
-                        }))
+                        }
+                        docs = list(mongo[database].questions.find({}, fields))
                 except PyMongoError as error:
                     raise ValueError("Could not read MongoDB. Start the test database and try again.") from error
                 bank_path.write_text(json_util.dumps(docs), encoding="utf-8")
@@ -152,7 +154,7 @@ class LocalWorkflow:
                     match = current.get((item.mongo_id, item.mongo_id_type))
                     if not match or (match.subject, match.text, match.answer) != (item.subject, item.question, item.answer):
                         raise ValueError("The saved audit differs from the current bank. Start a fresh baseline scan.")
-                self.update(status="ready", message="", subject=None,
+                self.update(status="ready", message="", subject=None, bank_snapshot_full=True,
                             scan={"input_questions": len(bank_questions)})
                 return
             if not is_baseline:
@@ -177,7 +179,7 @@ class LocalWorkflow:
                         write_results(path / "scan", {"review_candidates.json": data})
             if is_baseline:
                 ReviewJob(*self.review_paths())
-                self.update(status="ready", message="", subject=None,
+                self.update(status="ready", message="", subject=None, bank_snapshot_full=True,
                             scan={"input_questions": len(bank_questions)})
                 return
             self.update(message="Finding similar questions…")
@@ -343,14 +345,25 @@ class LocalWorkflow:
             self.update(export=None)
             return self.snapshot()
 
-    def export(self, job_id):
+    def export(self, job_id, original_bank=None):
         with self.lock:
             path = self.require_ready(job_id)
             if self.state.get("agent_running"):
                 raise ValueError("Pause agent review before preparing results.")
             name = f"export-{uuid.uuid4().hex}"
             if self.state.get("mode") == "baseline":
-                summary = export_baseline(self.job(), path / name)
+                bank_source = (path / "bank.json").read_text(encoding="utf-8")
+                if not self.state.get("bank_snapshot_full"):
+                    if not isinstance(original_bank, str) or not original_bank:
+                        raise ValueError("Choose the original bank JSON to preserve all fields in these downloads.")
+                    self.validate_original_bank(bank_source, original_bank)
+                    bank_source = original_bank.removeprefix("\ufeff")
+                summary = export_baseline(self.job(), path / name, bank_source)
+                if not self.state.get("bank_snapshot_full"):
+                    recovered = path / "bank-recovered.json"
+                    recovered.write_text(bank_source, encoding="utf-8")
+                    recovered.replace(path / "bank.json")
+                    self.update(bank_snapshot_full=True)
             else:
                 report, db = self.review_paths()
                 summary = finalize(
@@ -363,6 +376,21 @@ class LocalWorkflow:
                 export["preview"] = json.loads((path / name / "proposed_archives.json").read_text(encoding="utf-8"))
             self.update(export=export)
             return self.snapshot()
+
+    @staticmethod
+    def validate_original_bank(snapshot, original):
+        from bson import json_util
+
+        records = json_util.loads(original)
+        if not isinstance(records, list) or not all(isinstance(item, dict) and "_id" in item for item in records):
+            raise ValueError("Choose a MongoDB JSON array with original record IDs.")
+        indexed = {item["_id"]: item for item in records}
+        saved = json_util.loads(snapshot)
+        if len(indexed) != len(records) or len(saved) != len(records) or any(
+            item["_id"] not in indexed or any(indexed[item["_id"]].get(key) != value for key, value in item.items())
+            for item in saved
+        ):
+            raise ValueError("The original bank differs from the snapshot used for this review.")
 
     def download(self, job_id, filename):
         with self.lock:
@@ -464,7 +492,7 @@ class LocalHandler(BaseHTTPRequestHandler):
         elif path == "/api/pause":
             result = workflow.stop_agent(data.get("job"))
         elif path == "/api/export":
-            result = workflow.export(data.get("job"))
+            result = workflow.export(data.get("job"), data.get("original_bank"))
         else:
             self.send_json(404, {"error": "Page not found."})
             return

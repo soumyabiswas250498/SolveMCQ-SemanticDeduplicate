@@ -60,11 +60,16 @@ def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only
             **item, "type": "exact", **keeper_fields(keeper),
         })
     duplicates.sort(key=lambda item: item["input_row"])
-    unique = [item.record for item in retained if item.id not in removed_to_keeper]
+    existing_ids = job.report.existing_ids or {}
+    if not existing_ids.keys() <= {item.row for item in retained}:
+        raise ValueError("Candidate report contains an unknown existing input row")
+    drop_rows = {item["input_row"] for item in duplicates} | existing_ids.keys()
+    unique, drop = partition_records([item.record for item in questions], drop_rows)
     summary = {
         "job_id": job.job_id,
         "input_questions": len(questions),
         "retained_questions": len(unique),
+        "dropped_questions": len(drop),
         "exact_duplicates_removed": len(exact),
         "semantic_duplicates_removed": len(semantic),
         "pending_pairs": sum(item["status"] == "pending" for item in unresolved),
@@ -73,14 +78,11 @@ def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only
         "complete": not unresolved and not conflicts,
     }
     results = {
-        "unique.json": unique, "duplicates.json": duplicates,
+        "unique.json": unique, "drop.json": drop, "duplicates.json": duplicates,
         "unresolved.json": {"pairs": unresolved, "blocked_duplicate_groups": conflicts},
         "summary.json": summary,
     }
     if job.report.schema_version == 2 or reviewed_only:
-        existing_ids = job.report.existing_ids or {}
-        if not existing_ids.keys() <= {item.row for item in retained}:
-            raise ValueError("Candidate report contains an unknown existing input row")
         ready = [
             item.record for item in retained
             if item.id not in removed_to_keeper and item.id not in held and item.row not in existing_ids
@@ -202,7 +204,16 @@ def reconcile(job, describe, protected_ids=()):
     return removed_to_keeper, evidence, unresolved, conflicts, held
 
 
-def export_baseline(job, output):
+def partition_records(records, drop_rows):
+    unique, drop = [], []
+    for row, record in enumerate(records, 1):
+        (drop if row in drop_rows else unique).append(record)
+    if len(drop) != len(drop_rows):
+        raise ValueError("The drop list contains unknown input rows.")
+    return unique, drop
+
+
+def export_baseline(job, output, bank_source):
     questions = job.report.questions
     if not job.report.batch_id.startswith("bank:") or any(not item.mongo_id for item in questions.values()):
         raise ValueError("Choose an existing-bank baseline report.")
@@ -218,14 +229,32 @@ def export_baseline(job, output):
          "duplicate_pair_ids": evidence[item]}
         for item, keeper in sorted(removed.items(), key=lambda pair: questions[pair[0]].mongo_id)
     ]
+    from bson import json_util
+
+    raw_records = json.loads(bank_source)
+    documents = json_util.loads(bank_source)
+    if not isinstance(documents, list) or not all(isinstance(item, dict) and "_id" in item for item in documents):
+        raise ValueError("The original bank must contain records with MongoDB IDs.")
+    bank_rows = {(str(item["_id"]), type(item["_id"]).__name__): row
+                 for row, item in enumerate(documents, 1)}
+    if len(bank_rows) != len(documents):
+        raise ValueError("The original bank contains duplicate MongoDB IDs.")
+    archive_ids = {(item["archive_id"], item["archive_id_type"]) for item in proposals}
+    if not archive_ids <= bank_rows.keys():
+        raise ValueError("Some proposed archive IDs are missing from the original bank.")
+    unique, drop = partition_records(raw_records, {bank_rows[item] for item in archive_ids})
     summary = {
         "proposed_archives": len(proposals),
+        "input_questions": len(documents),
+        "retained_questions": len(unique),
+        "dropped_questions": len(drop),
         "pending_pairs": sum(item["status"] == "pending" for item in unresolved),
         "deferred_pairs": sum(item["status"] == "needs_review" for item in unresolved),
         "blocked_duplicate_groups": len(conflicts),
         "complete": not unresolved and not conflicts,
     }
     write_results(output, {
+        "unique.json": unique, "drop.json": drop,
         "proposed_archives.json": proposals, "summary.json": summary,
         "unresolved.json": {"pairs": unresolved, "blocked_duplicate_groups": conflicts},
     })

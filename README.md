@@ -213,3 +213,10 @@ the app with `solvemcq-ui` and open `http://127.0.0.1:8766` on the same computer
 The app saves the current job under `.solvemcq/browser`. Keep one running app
 per data directory. Archive proposals and import-ready files are exports for
 use in your normal database workflow.
+
+**Download unique.json** and **Download drop.json** split the original records
+into two JSON arrays. Both preserve the full record fields. Unresolved records
+stay in the retained file until reviewed. When reopening an older baseline that
+saved a partial MongoDB snapshot, select the original bank export once to
+restore the full fields. The incoming import-ready export continues to hold
+unresolved records back.
