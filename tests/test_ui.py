@@ -69,3 +69,114 @@ class BrowserWorkflowTest(unittest.TestCase):
                 finally:
                     server.shutdown()
                     thread.join()
+
+    def test_baseline_agent_handoff_and_archive_preview(self):
+        from unittest.mock import patch
+
+        from solvemcq.review import Decision
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workflow = LocalWorkflow(Path(temporary))
+            workflow.embedding = 2, lambda texts, **_: np.tile([1.0, 0.0], (len(texts), 1))
+            records = [
+                {"_id": str(index), "subject": "history", "question": f"Version {index}?",
+                 "options": [{"key": "A", "text": "Answer"}, {"key": "B", "text": "Other"}],
+                 "correctOptionKey": "A"}
+                for index in range(1, 4)
+            ]
+
+            def wait_for(field, expected):
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    state = workflow.snapshot()
+                    if state.get(field) == expected:
+                        return state
+                    if state["status"] == "error":
+                        self.fail(state)
+                    time.sleep(0.02)
+                self.fail(workflow.snapshot())
+
+            workflow.start({"mode": "baseline", "bank": json.dumps(records)})
+            state = wait_for("status", "ready")
+            job_id = state["id"]
+            self.assertEqual(state["review"]["pending"], 3)
+
+            def agent_decisions(_agent, pairs):
+                return [
+                    Decision(pair_id=pair["pair_id"], verdict="needs_review", reason="Unclear scope")
+                    for pair in pairs
+                ]
+
+            with patch("solvemcq.ui.subscription_agent", return_value=object()), patch(
+                "solvemcq.ui.review_candidates", side_effect=agent_decisions,
+            ):
+                workflow.start_agent(job_id)
+                state = wait_for("agent_running", False)
+            self.assertEqual(state["review"]["pending"], 0)
+            self.assertEqual(state["review"]["needs_review"], 3)
+
+            pair = workflow.pair(job_id, "needs_review")
+            self.assertEqual(pair["previous_reason"], "Unclear scope")
+            self.assertTrue(all(question["options"] for question in pair["questions"]))
+            next_pair = workflow.pair(job_id, "needs_review", after=pair["pair_id"])
+            self.assertGreater(next_pair["pair_id"], pair["pair_id"])
+
+            pairs = workflow.job().batch(3, "needs_review")["candidates"]
+            for pair in pairs:
+                keeper = next((item for item in pair["questions"] if item["mongo_id"] == "1"), None)
+                workflow.decide(job_id, {
+                    "pair_id": pair["pair_id"], "verdict": "duplicate" if keeper else "distinct",
+                    "keep_question_id": keeper["question_id"] if keeper else None,
+                })
+
+            state = workflow.export(job_id)
+            self.assertEqual(state["export"]["summary"]["proposed_archives"], 0)
+            conflict_id = state["export"]["conflicts"][0]["distinct_pair_ids"][0]
+            pair = workflow.pair(job_id, "needs_review", conflict=conflict_id)
+            workflow.decide(job_id, {
+                "pair_id": conflict_id, "conflict": conflict_id, "verdict": "duplicate",
+                "keep_question_id": pair["questions"][0]["question_id"],
+            })
+            state = workflow.export(job_id)
+            self.assertEqual(state["export"]["summary"]["proposed_archives"], 2)
+            proposed = json.loads(workflow.download(job_id, "proposed_archives.json"))
+            self.assertEqual({row["keep_id"] for row in proposed}, {"1"})
+
+    def test_reopen_existing_baseline_with_saved_decisions(self):
+        from unittest.mock import patch
+
+        from solvemcq.review import Decision
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            workflow = LocalWorkflow(root)
+            workflow.embedding = 2, lambda texts, **_: np.tile([1.0, 0.0], (len(texts), 1))
+            bank = json.dumps([
+                {"_id": str(index), "subject": "history", "question": f"Version {index}?", "answer": "Here"}
+                for index in range(2)
+            ])
+
+            def wait_ready():
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    state = workflow.snapshot()
+                    if state["status"] == "ready":
+                        return state
+                    if state["status"] == "error":
+                        self.fail(state)
+                    time.sleep(0.02)
+                self.fail(workflow.snapshot())
+
+            workflow.start({"mode": "baseline", "bank": bank})
+            wait_ready()
+            paths = workflow.review_paths()
+            original = workflow.job()
+            original.submit(original.job_id, [Decision(pair_id=1, verdict="needs_review", reason="Check the source")])
+            with patch.object(workflow, "review_paths", return_value=paths):
+                workflow.embedding = None
+                workflow.start({"mode": "resume", "bank": bank})
+                resumed = wait_ready()
+                self.assertEqual(resumed["review"]["job_id"], original.job_id)
+                self.assertEqual(resumed["review"]["needs_review"], 1)
+                workflow.decide(resumed["id"], {"pair_id": 1, "verdict": "distinct"})
+            self.assertEqual(original.summary()["distinct"], 1)

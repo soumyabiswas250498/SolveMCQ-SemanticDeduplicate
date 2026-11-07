@@ -186,16 +186,25 @@ python -m pip install -e '.[embeddings,review,bank]'
 On macOS, double-click **Open-SolveMCQ.command** in Finder. You can also start
 the app with `solvemcq-ui` and open `http://127.0.0.1:8766` on the same computer.
 
-1. Choose the incoming MCQ JSON. Optionally select a MongoDB Extended JSON
-   export as the question bank. The app reads that export directly.
-2. Click **Find similar questions**. The first search can take several minutes
-   while BGE-M3 downloads and loads.
-3. Review the two questions side by side. Choose which to keep if they are the
-   same, mark them different, or set the pair aside.
-4. Click **Prepare downloads** and download the ready questions. Deferred and
-   pending questions, blocked groups, and matching bank IDs stay out of this file.
+1. Choose **Clean existing bank** to scan the MongoDB bank or **Add new
+   questions** to check an incoming JSON against itself and the bank.
+   The default live services are `solvemcq_test.questions` at
+   `mongodb://127.0.0.1:27018` and Qdrant at `http://127.0.0.1:6333`.
+   A MongoDB Extended JSON export can be selected instead of the live bank.
+2. To resume the earlier CLI baseline, choose **Open saved baseline review**.
+   The app opens `output/baseline/review_candidates.json` and
+   `.solvemcq/baseline-reviews.sqlite3` in the project folder. The live bank
+   or an export supplies the original answer choices.
+3. Choose **Review manually** or **Let the agent review**. Agent review needs
+   the Codex CLI signed in with ChatGPT. It sends candidate pairs and their
+   choices to Codex in batches and saves validated decisions as each batch
+   completes. **Pause after this batch** preserves completed decisions.
+4. Open **Needs your decision** to handle uncertain matches. Choose a keeper,
+   mark the pair distinct, or leave it for later and advance.
+5. Use **Preview results**. Baseline jobs propose archive IDs and keepers.
+   Incoming jobs prepare an import-ready JSON. The preview lists conflicts
+   that can be opened and revised before exporting again.
 
-The browser app saves the current job and decisions under
-`.solvemcq/browser`. Use a single running app per data directory. The browser
-offers manual review. The existing Codex MCP review flow remains available
-through the CLI for AI-assisted review.
+The app saves the current job under `.solvemcq/browser`. Keep one running app
+per data directory. Archive proposals and import-ready files are exports for
+use in your normal database workflow.

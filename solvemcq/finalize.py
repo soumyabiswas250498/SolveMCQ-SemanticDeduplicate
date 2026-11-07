@@ -47,99 +47,12 @@ def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only
                     "kept_mongo_id_type": item.mongo_id_type, "kept_input_row": None}
         return {"kept_id": question_id, "kept_input_row": by_id[question_id].row}
 
-    decisions = job.saved_decisions()
-    if any(pair_id > len(job.report.pairs) for pair_id in decisions):
-        raise ValueError("Review database contains an unknown pair ID for this report")
-
-    neighbors = defaultdict(set)
-    keep_targets = defaultdict(set)
-    duplicate_pairs = defaultdict(set)
-    distinct_pairs = defaultdict(dict)
-    unresolved = []
-    blocked = defaultdict(set)
-
-    for pair_id, pair in enumerate(job.report.pairs, 1):
-        left, right = pair.question_ids
-        decision = decisions.get(pair_id)
-        if decision is None or decision.verdict == "needs_review":
-            for question_id in pair.question_ids:
-                blocked[question_id].add(pair_id)
-            unresolved.append({
-                "pair_id": pair_id,
-                "status": decision.verdict if decision else "pending",
-                "reason": decision.reason if decision else None,
-                "questions": [describe(question_id) for question_id in pair.question_ids],
-            })
-        elif decision.verdict == "distinct":
-            distinct_pairs[left][right] = pair_id
-        else:
-            keeper = decision.keep_question_id
-            if keeper not in pair.question_ids:
-                raise ValueError(f"Invalid keeper for pair {pair_id}")
-            removed = right if keeper == left else left
-            keep_targets[removed].add(keeper)
-            neighbors[left].add(right)
-            neighbors[right].add(left)
-            duplicate_pairs[left].add(pair_id)
-
-    removed_to_keeper = {}
-    semantic = []
-    conflicts = []
-    visited = set()
-    held = set(blocked)
-    for start in neighbors:
-        if start in visited:
-            continue
-        component = {start}
-        todo = [start]
-        while todo:
-            for neighbor in neighbors[todo.pop()] - component:
-                component.add(neighbor)
-                todo.append(neighbor)
-        visited.update(component)
-
-        pending_ids = sorted({pair_id for item in component for pair_id in blocked[item]})
-        distinct_ids = sorted(
-            pair_id for item in component for other, pair_id in distinct_pairs[item].items()
-            if other in component
-        )
-        pair_ids = sorted({pair_id for item in component for pair_id in duplicate_pairs[item]})
-        keepers = [item for item in component if not keep_targets[item]]
-        reasons = []
-        existing_members = component.intersection(existing)
-        if existing_members and (len(existing_members) != 1 or keepers != list(existing_members)):
-            reasons.append("Group does not resolve to exactly one existing MongoDB keeper")
-        if pending_ids:
-            reasons.append("Touches an unresolved pair")
-        if distinct_ids:
-            reasons.append("Contains a pair marked distinct")
-        if len(keepers) != 1:
-            reasons.append("Keeper decisions do not identify one retained question")
-        try:
-            tuple(TopologicalSorter({item: keep_targets[item] for item in component}).static_order())
-        except CycleError:
-            reasons.append("Keeper decisions form a cycle")
-
-        if reasons:
-            held.update(component)
-            conflicts.append({
-                "reasons": reasons, "duplicate_pair_ids": pair_ids,
-                "distinct_pair_ids": distinct_ids, "unresolved_pair_ids": pending_ids,
-                "questions": [
-                    describe(item) for item in sorted(component)
-                ],
-            })
-            continue
-
-        keeper = keepers[0]
-        for item in sorted(component - {keeper}, key=lambda item: by_id[item].row):
-            removed_to_keeper[item] = keeper
-            semantic.append({
-                "type": "semantic", "removed_id": item, "input_row": by_id[item].row,
-                "record": by_id[item].record, **keeper_fields(keeper),
-                "duplicate_pair_ids": pair_ids,
-            })
-
+    removed_to_keeper, evidence, unresolved, conflicts, held = reconcile(job, describe, existing)
+    semantic = [
+        {"type": "semantic", "removed_id": item, "input_row": by_id[item].row,
+         "record": by_id[item].record, **keeper_fields(keeper), "duplicate_pair_ids": evidence[item]}
+        for item, keeper in removed_to_keeper.items()
+    ]
     duplicates = semantic.copy()
     for item in exact:
         keeper = removed_to_keeper.get(item["kept_id"], item["kept_id"])
@@ -181,6 +94,128 @@ def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only
         summary["import_ready_questions"] = len(ready)
         summary["held_questions"] = len(unique) - len(ready)
     write_results(output, results)
+    return summary
+
+
+def reconcile(job, describe, protected_ids=()):
+    decisions = job.saved_decisions()
+    if any(pair_id > len(job.report.pairs) for pair_id in decisions):
+        raise ValueError("Review database contains an unknown pair ID for this report")
+
+    neighbors = defaultdict(set)
+    keep_targets = defaultdict(set)
+    duplicate_pairs = defaultdict(set)
+    distinct_pairs = defaultdict(dict)
+    unresolved = []
+    blocked = defaultdict(set)
+
+    for pair_id, pair in enumerate(job.report.pairs, 1):
+        left, right = pair.question_ids
+        decision = decisions.get(pair_id)
+        if decision is None or decision.verdict == "needs_review":
+            for question_id in pair.question_ids:
+                blocked[question_id].add(pair_id)
+            unresolved.append({
+                "pair_id": pair_id,
+                "status": decision.verdict if decision else "pending",
+                "reason": decision.reason if decision else None,
+                "questions": [describe(question_id) for question_id in pair.question_ids],
+            })
+        elif decision.verdict == "distinct":
+            distinct_pairs[left][right] = pair_id
+        else:
+            keeper = decision.keep_question_id
+            if keeper not in pair.question_ids:
+                raise ValueError(f"Invalid keeper for pair {pair_id}")
+            removed = right if keeper == left else left
+            keep_targets[removed].add(keeper)
+            neighbors[left].add(right)
+            neighbors[right].add(left)
+            duplicate_pairs[left].add(pair_id)
+
+    removed_to_keeper = {}
+    evidence = {}
+    conflicts = []
+    visited = set()
+    held = set(blocked)
+    for start in neighbors:
+        if start in visited:
+            continue
+        component = {start}
+        todo = [start]
+        while todo:
+            for neighbor in neighbors[todo.pop()] - component:
+                component.add(neighbor)
+                todo.append(neighbor)
+        visited.update(component)
+
+        pending_ids = sorted({pair_id for item in component for pair_id in blocked[item]})
+        distinct_ids = sorted(
+            pair_id for item in component for other, pair_id in distinct_pairs[item].items()
+            if other in component
+        )
+        pair_ids = sorted({pair_id for item in component for pair_id in duplicate_pairs[item]})
+        keepers = [item for item in component if not keep_targets[item]]
+        reasons = []
+        existing_members = component.intersection(protected_ids)
+        if existing_members and (len(existing_members) != 1 or keepers != list(existing_members)):
+            reasons.append("Group does not resolve to exactly one existing MongoDB keeper")
+        if pending_ids:
+            reasons.append("Touches an unresolved pair")
+        if distinct_ids:
+            reasons.append("Contains a pair marked distinct")
+        if len(keepers) != 1:
+            reasons.append("Keeper decisions do not identify one retained question")
+        try:
+            tuple(TopologicalSorter({item: keep_targets[item] for item in component}).static_order())
+        except CycleError:
+            reasons.append("Keeper decisions form a cycle")
+
+        if reasons:
+            held.update(component)
+            conflicts.append({
+                "reasons": reasons, "duplicate_pair_ids": pair_ids,
+                "distinct_pair_ids": distinct_ids, "unresolved_pair_ids": pending_ids,
+                "questions": [
+                    describe(item) for item in sorted(component)
+                ],
+            })
+            continue
+
+        keeper = keepers[0]
+        for item in component - {keeper}:
+            removed_to_keeper[item] = keeper
+            evidence[item] = pair_ids
+    return removed_to_keeper, evidence, unresolved, conflicts, held
+
+
+def export_baseline(job, output):
+    questions = job.report.questions
+    if not job.report.batch_id.startswith("bank:") or any(not item.mongo_id for item in questions.values()):
+        raise ValueError("Choose an existing-bank baseline report.")
+
+    def describe(question_id):
+        return {"question_id": question_id, **questions[question_id].model_dump(exclude_none=True)}
+
+    removed, evidence, unresolved, conflicts, _ = reconcile(job, describe)
+    proposals = [
+        {"archive_id": questions[item].mongo_id, "archive_id_type": questions[item].mongo_id_type,
+         "keep_id": questions[keeper].mongo_id, "keep_id_type": questions[keeper].mongo_id_type,
+         "archive_question": questions[item].question, "keep_question": questions[keeper].question,
+         "duplicate_pair_ids": evidence[item]}
+        for item, keeper in sorted(removed.items(), key=lambda pair: questions[pair[0]].mongo_id)
+    ]
+    summary = {
+        "proposed_archives": len(proposals),
+        "pending_pairs": sum(item["status"] == "pending" for item in unresolved),
+        "deferred_pairs": sum(item["status"] == "needs_review" for item in unresolved),
+        "blocked_duplicate_groups": len(conflicts),
+        "complete": not unresolved and not conflicts,
+    }
+    write_results(output, {
+        "proposed_archives.json": proposals, "summary.json": summary,
+        "unresolved.json": {"pairs": unresolved, "blocked_duplicate_groups": conflicts},
+    })
     return summary
 
 

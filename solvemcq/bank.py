@@ -150,6 +150,23 @@ def find_existing_rows(client, collection, questions):
     return known
 
 
+def baseline_report(client, name, questions, metadata):
+    pairs = find_candidates(client, bank_collection(name), questions, 12, 0.70)
+    flagged = {question_id for pair in pairs for question_id in pair["question_ids"]}
+    return {
+        "schema_version": 2,
+        "batch_id": f"bank:{name}",
+        "questions": {
+            item.id: {
+                "input_row": None, "subject": item.subject, "question": item.text,
+                "answer": item.answer, **metadata[item.id],
+            }
+            for item in questions if item.id in flagged
+        },
+        "pairs": pairs,
+    }
+
+
 def main():
     from pymongo import MongoClient
     from pymongo.errors import PyMongoError
@@ -181,24 +198,11 @@ def main():
         try:
             summary = sync_bank(client, args.bank, questions, metadata, dimension, encode, 16, args.allow_empty)
             if args.baseline_report:
-                pairs = find_candidates(client, bank_collection(args.bank), questions, 12, 0.70)
-                flagged = {question_id for pair in pairs for question_id in pair["question_ids"]}
-                data = {
-                    "schema_version": 2,
-                    "batch_id": f"bank:{args.bank}",
-                    "questions": {
-                        item.id: {
-                            "input_row": None, "subject": item.subject, "question": item.text,
-                            "answer": item.answer, **metadata[item.id],
-                        }
-                        for item in questions if item.id in flagged
-                    },
-                    "pairs": pairs,
-                }
+                data = baseline_report(client, args.bank, questions, metadata)
                 args.baseline_report.parent.mkdir(parents=True, exist_ok=True)
                 with args.baseline_report.open("x", encoding="utf-8") as output:
                     json.dump(data, output, ensure_ascii=False, indent=2)
-                summary["candidate_pairs"] = len(pairs)
+                summary["candidate_pairs"] = len(data["pairs"])
         finally:
             client.close()
     except (ImportError, OSError, ValueError, PyMongoError, ApiException) as error:

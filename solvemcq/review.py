@@ -120,30 +120,34 @@ class ReviewJob:
             "needs_review": counts.get("needs_review", 0),
         }
 
-    def batch(self, limit: int, queue: Literal["pending", "needs_review"]):
+    def batch(self, limit: int, queue: Literal["pending", "needs_review"], *, after: int = 0):
         with closing(sqlite3.connect(self.db_path)) as db:
             decisions = {pair_id: (verdict, reason) for pair_id, verdict, reason in db.execute("""
                 SELECT pair_id, verdict, reason FROM review_decisions WHERE job_id = ?
             """, (self.job_id,))}
         candidates = []
-        for pair_id, pair in enumerate(self.report.pairs, 1):
+        for pair_id in range(1, len(self.report.pairs) + 1):
             verdict, reason = decisions.get(pair_id, ("pending", None))
-            if verdict != queue:
+            if verdict != queue or pair_id <= after:
                 continue
-            candidates.append({
-                "pair_id": pair_id,
-                **pair.model_dump(mode="json"),
-                "questions": [
-                    {"question_id": question_id, **self.report.questions[question_id].model_dump(exclude_none=True)}
-                    for question_id in pair.question_ids
-                ],
-                "previous_reason": reason,
-            })
+            candidates.append(self.describe_pair(pair_id, reason))
             if len(candidates) == limit:
                 break
         return {"job_id": self.job_id, "queue": queue, "candidates": candidates}
 
-    def submit(self, job_id: str, decisions: list[Decision]):
+    def describe_pair(self, pair_id, reason=None):
+        pair = self.report.pairs[pair_id - 1]
+        return {
+            "pair_id": pair_id,
+            **pair.model_dump(mode="json"),
+            "questions": [
+                {"question_id": question_id, **self.report.questions[question_id].model_dump(exclude_none=True)}
+                for question_id in pair.question_ids
+            ],
+            "previous_reason": reason,
+        }
+
+    def submit(self, job_id: str, decisions: list[Decision], *, replace: Decision | None = None):
         if job_id != self.job_id:
             raise ValueError("Job ID does not match the current report. Fetch a new review batch.")
         seen = set()
@@ -176,7 +180,11 @@ class ReviewJob:
                 """, key).fetchone()
                 if previous == value:
                     continue
-                if previous is not None and previous[0] != "needs_review":
+                if replace is not None:
+                    expected = (replace.verdict, replace.reason, replace.keep_question_id)
+                    if replace.pair_id != decision.pair_id or previous != expected:
+                        raise ValueError(f"Pair {decision.pair_id} changed. Preview the results again.")
+                elif previous is not None and previous[0] != "needs_review":
                     raise ValueError(f"Pair {decision.pair_id} already has a final decision")
                 db.execute("""
                     INSERT INTO review_decisions (job_id, pair_id, verdict, reason, keep_question_id)

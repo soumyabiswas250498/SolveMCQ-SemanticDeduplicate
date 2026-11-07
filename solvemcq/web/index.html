@@ -36,27 +36,35 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
 <header><div class="bar"><div class="brand">SolveMCQ</div><div class="local">Local question review</div></div></header>
 <main>
   <h1>Find duplicate questions</h1>
-  <p class="sub">Choose a JSON file, compare questions side by side, and download the result.</p>
+  <p class="sub">Clean up your existing bank or check new questions before adding them.</p>
   <ol class="steps" aria-label="Workflow"><li id="step-files">1. Choose files</li><li id="step-review">2. Review matches</li><li id="step-export">3. Download results</li></ol>
   <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
 
   <section id="setup" class="panel" aria-labelledby="setup-title">
-    <h2 id="setup-title">Choose your files</h2>
+    <h2 id="setup-title">What would you like to do?</h2>
+    <div class="actions" aria-label="Workflow">
+      <button type="button" id="mode-baseline">Clean existing bank</button>
+      <button type="button" id="mode-incoming" aria-pressed="true">Add new questions</button>
+      <button type="button" id="mode-resume">Open saved baseline review</button>
+    </div>
     <form id="files-form">
       <div class="files">
-        <label class="file">Questions to check <small>Required · JSON file</small>
+        <label id="incoming-file" class="file">Questions to check <small>Required · JSON file</small>
           <input id="source" type="file" accept=".json,application/json" required>
         </label>
-        <label class="file">Existing question bank <small>Optional · MongoDB JSON export</small>
+        <label class="file">Existing question bank <small>Optional · use a MongoDB JSON export instead of the live bank</small>
           <input id="bank" type="file" accept=".json,application/json">
         </label>
       </div>
-      <details><summary>Subject settings</summary>
+      <label id="live-label"><input id="live" type="checkbox" checked> Check against the local MongoDB bank</label>
+      <details><summary>Bank and subject settings</summary>
+        <label for="database">MongoDB database</label>
+        <input id="database" type="text" value="solvemcq_test">
         <label for="subject">Subject ID for questions without a subject</label>
         <input id="subject" type="text">
         <p class="sub">Leave blank if the questions already have a subject or the bank has only one subject.</p>
       </details>
-      <button class="primary" type="submit">Find similar questions</button>
+      <button id="search" class="primary" type="submit">Find similar questions</button>
     </form>
   </section>
 
@@ -65,9 +73,15 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
     <div class="stats" id="stats"></div>
     <progress id="progress" max="1" value="0" aria-label="Pairs reviewed"></progress>
     <p class="sub" id="scan-summary"></p>
-    <div class="actions" aria-label="Review list">
+    <div class="actions" id="review-method">
+      <button id="manual" type="button">Review manually</button>
+      <button id="agent" type="button" class="primary">Let the agent review</button>
+      <button id="pause" type="button" hidden>Pause after this batch</button>
+    </div>
+    <p class="sub" id="agent-note">Agent review sends the selected pairs to Codex using your ChatGPT sign-in.</p>
+    <div class="actions" id="review-list" aria-label="Review list" hidden>
       <button id="pending" type="button" aria-pressed="true">To review</button>
-      <button id="deferred" type="button" aria-pressed="false">Set-aside pairs</button>
+      <button id="deferred" type="button" aria-pressed="false">Needs your decision</button>
     </div>
     <p id="pair-status" class="sub" aria-live="polite"></p>
     <div id="pair-area" hidden>
@@ -82,8 +96,8 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
 
   <section id="results" class="panel" aria-labelledby="results-title" hidden>
     <h2 id="results-title">Download results</h2>
-    <p class="sub">Questions still under review and questions already in your bank are held out of the ready file.</p>
-    <div class="actions"><button type="button" id="export" class="primary">Prepare downloads</button></div>
+    <p id="results-note" class="sub">Questions still under review and questions already in your bank are held out of the ready file.</p>
+    <div class="actions"><button type="button" id="export" class="primary">Preview results</button></div>
     <div id="downloads" class="result" aria-live="polite"></div>
   </section>
 </main>
@@ -94,6 +108,11 @@ const $ = id => document.getElementById(id);
 let state = {};
 let queue = "pending";
 let busy = false;
+let mode = "incoming";
+let manual = false;
+let after = 0;
+let pendingPoll;
+
 
 function node(tag, text, className) {
   const element = document.createElement(tag);
@@ -134,9 +153,23 @@ function render() {
   notice(state.message || "", state.status === "error");
   if (!ready) return;
   const r = state.review;
+  const baseline = state.mode === "baseline";
+  $("review-title").textContent = baseline ? "Review existing bank" : "Review new questions";
+  $("results-note").textContent = baseline
+    ? "Preview the proposed archive list. This app saves a report only."
+    : "Unresolved questions and questions already in your bank stay out of the ready file.";
+  $("review-list").hidden = !manual || !!state.agent_running;
+  $("manual").hidden = !!state.agent_running;
+  $("agent").hidden = !!state.agent_running || r.pending === 0;
+  $("pause").hidden = !state.agent_running;
+  $("export").hidden = !!state.agent_running;
+  if (!manual || state.agent_running) {
+    $("pair-area").hidden = true;
+    $("pair-status").textContent = "";
+  }
   $("stats").replaceChildren(...[
     ["To review", r.pending], ["Same question", r.duplicates],
-    ["Different", r.distinct], ["Set aside", r.needs_review]
+    ["Different", r.distinct], ["Needs your decision", r.needs_review]
   ].map(([label, count]) => {
     const item = node("div", undefined, "stat");
     item.append(node("strong", count), label);
@@ -145,20 +178,56 @@ function render() {
   $("progress").max = r.candidate_pairs || 1;
   $("progress").value = r.candidate_pairs ? r.candidate_pairs - r.pending : 1;
   const scan = state.scan;
-  $("scan-summary").textContent = `${scan.input_questions} questions checked · ${scan.exact_duplicates} exact repeats` +
+  $("scan-summary").textContent = `${scan.input_questions} questions checked` +
+    (baseline ? "" : ` · ${scan.exact_duplicates} exact repeats`) +
     (scan.bank ? ` · ${scan.already_in_bank} IDs already in the bank` : "");
   const downloads = $("downloads");
   downloads.replaceChildren();
   if (state.export) {
     const summary = state.export.summary;
-    downloads.append(node("p", `${summary.import_ready_questions} questions ready · ${summary.held_questions} held back`));
+    downloads.append(node("p", baseline
+      ? `${summary.proposed_archives} proposed archives · ${summary.blocked_duplicate_groups} blocked groups`
+      : `${summary.import_ready_questions} questions ready · ${summary.held_questions} held back`));
+    if (state.export.preview && state.export.preview.length) {
+      const list = node("details");
+      list.append(node("summary", "See proposed keep and archive decisions"));
+      const rows = node("ul");
+      for (const row of state.export.preview) {
+        rows.append(node("li", `Keep: ${row.keep_question} · Archive: ${row.archive_question}`));
+      }
+      list.append(rows);
+      downloads.append(list);
+    }
+    if (state.export.conflicts && state.export.conflicts.length) {
+      const list = node("details");
+      list.append(node("summary", "See conflicts and blocked groups"));
+      const rows = node("ul");
+      for (const conflict of state.export.conflicts) {
+        const item = node("li", conflict.reasons.join(". "));
+        for (const pairId of [...conflict.duplicate_pair_ids, ...conflict.distinct_pair_ids]) {
+          item.append(" ", button(`Review pair ${pairId}`, () => attempt(async () => {
+            manual = true;
+            render();
+            await showPair(pairId);
+            $("review-title").scrollIntoView();
+          })));
+        }
+        rows.append(item);
+      }
+      list.append(rows);
+      downloads.append(list);
+    }
     const links = node("div", undefined, "actions");
-    for (const [file, label] of [
+    const files = baseline ? [
+      ["proposed_archives.json", "Download proposed archives"], ["unresolved.json", "Still to review"],
+      ["summary.json", "Summary"]
+    ] : [
       ["import_ready.json", "Download ready questions"], ["duplicates.json", "Duplicates"],
       ["unresolved.json", "Still to review"], ["already_in_bank.json", "Already in bank"], ["summary.json", "Summary"]
-    ]) {
+    ];
+    for (const [file, label] of files) {
       if (file === "already_in_bank.json" && !state.scan.bank) continue;
-      const link = node("a", label, file === "import_ready.json" ? "button primary" : "button");
+      const link = node("a", label, file === files[0][0] ? "button primary" : "button");
       link.href = "/api/download?" + new URLSearchParams({job: state.id, file});
       link.download = file;
       links.append(link);
@@ -167,13 +236,19 @@ function render() {
   }
 }
 
-async function showPair() {
+async function showPair(conflictId) {
   $("pending").setAttribute("aria-pressed", queue === "pending");
   $("deferred").setAttribute("aria-pressed", queue === "needs_review");
   $("pair-area").hidden = true;
   $("reason").value = "";
   $("reason-details").open = false;
-  const pair = await api("pair?" + new URLSearchParams({job: state.id, queue}));
+  const params = {job: state.id, queue, after};
+  if (conflictId) params.conflict = conflictId;
+  let pair = await api("pair?" + new URLSearchParams(params));
+  if (!pair && after && !conflictId) {
+    after = 0;
+    pair = await api("pair?" + new URLSearchParams({job: state.id, queue, after}));
+  }
   if (!pair) {
     $("pair-status").textContent = queue === "pending"
       ? "No pairs are waiting for a first review."
@@ -186,7 +261,7 @@ async function showPair() {
   $("pair").replaceChildren();
   const actions = $("pair-actions");
   actions.replaceChildren();
-  const existing = pair.questions.some(question => question.mongo_id);
+  const existing = pair.questions.filter(question => question.mongo_id).length === 1;
   for (const [index, question] of pair.questions.entries()) {
     const card = node("article", undefined, "question");
     const letter = index ? "B" : "A";
@@ -195,6 +270,7 @@ async function showPair() {
     if (question.options.length) {
       const choices = node("details");
       choices.append(node("summary", "Show answer choices"));
+      choices.open = true;
       const options = node("ol");
       for (const option of question.options) options.append(node("li", `${option.key}. ${option.text}`));
       choices.append(options);
@@ -203,12 +279,19 @@ async function showPair() {
     card.append(node("div", "Answer: " + question.answer, "answer"));
     $("pair").append(card);
     if (!existing || question.mongo_id) {
-      actions.append(button(question.mongo_id ? "Same — keep bank question" : `Same — keep ${letter}`,
-        () => save(pair.pair_id, "duplicate", question.question_id), true));
+      actions.append(button(existing && question.mongo_id ? "Same — keep bank question" : `Same — keep ${letter}`,
+        () => save(pair.pair_id, "duplicate", question.question_id, conflictId), true));
     }
   }
-  actions.append(button("Different questions", () => save(pair.pair_id, "distinct")));
-  if (queue === "pending") actions.append(button("Set aside for later", () => save(pair.pair_id, "needs_review")));
+  actions.append(button("Different questions", () => save(pair.pair_id, "distinct", undefined, conflictId)));
+  if (queue === "pending" || conflictId) {
+    actions.append(button("Set aside for later", () => save(pair.pair_id, "needs_review", undefined, conflictId)));
+  } else {
+    actions.append(button("Leave for later · Next pair", () => attempt(async () => {
+      after = pair.pair_id;
+      await showPair();
+    })));
+  }
 }
 
 async function attempt(action) {
@@ -225,9 +308,9 @@ async function attempt(action) {
   }
 }
 
-function save(pair_id, verdict, keep_question_id) {
+function save(pair_id, verdict, keep_question_id, conflict) {
   return attempt(async () => {
-    state = await api("decide", {job: state.id, pair_id, verdict, keep_question_id, reason: $("reason").value});
+    state = await api("decide", {job: state.id, pair_id, verdict, keep_question_id, conflict, reason: $("reason").value});
     render();
     await showPair();
   });
@@ -236,8 +319,12 @@ function save(pair_id, verdict, keep_question_id) {
 async function refresh() {
   state = await api("state");
   render();
-  if (state.status === "running") setTimeout(() => attempt(refresh), 1500);
-  if (state.status === "ready") await showPair();
+  clearTimeout(pendingPoll);
+  if (state.status === "running" || state.agent_running) {
+    pendingPoll = setTimeout(() => attempt(refresh), 1500);
+  } else if (state.status === "ready" && manual) {
+    await showPair();
+  }
 }
 
 $("files-form").addEventListener("submit", event => {
@@ -246,24 +333,59 @@ $("files-form").addEventListener("submit", event => {
     const source = $("source").files[0];
     const bank = $("bank").files[0];
     state = await api("start", {
-      source: await source.text(), bank: bank ? await bank.text() : "", subject: $("subject").value
+      mode, source: source ? await source.text() : "", bank: bank ? await bank.text() : "",
+      subject: $("subject").value, database: $("database").value, use_mongo: $("live").checked
     });
     queue = "pending";
+    after = 0;
+    manual = false;
     await refresh();
   });
 });
-$("pending").onclick = () => attempt(async () => { queue = "pending"; await showPair(); });
-$("deferred").onclick = () => attempt(async () => { queue = "needs_review"; await showPair(); });
+function selectMode(value) {
+  mode = value;
+  for (const choice of ["incoming", "baseline", "resume"]) {
+    $("mode-" + choice).setAttribute("aria-pressed", choice === value);
+  }
+  $("incoming-file").hidden = $("live-label").hidden = value !== "incoming";
+  $("source").required = value === "incoming";
+  $("search").textContent = value === "resume" ? "Open saved review" : "Find similar questions";
+}
+for (const choice of ["incoming", "baseline", "resume"]) {
+  $("mode-" + choice).onclick = () => selectMode(choice);
+}
+$("manual").onclick = () => attempt(async () => {
+  manual = true;
+  queue = state.review.pending ? "pending" : "needs_review";
+  after = 0;
+  render();
+  await showPair();
+});
+$("agent").onclick = () => attempt(async () => {
+  manual = true;
+  queue = "needs_review";
+  after = 0;
+  state = await api("agent", {job: state.id});
+  await refresh();
+});
+$("pause").onclick = () => attempt(async () => {
+  state = await api("pause", {job: state.id});
+  await refresh();
+});
+$("pending").onclick = () => attempt(async () => { queue = "pending"; after = 0; await showPair(); });
+$("deferred").onclick = () => attempt(async () => { queue = "needs_review"; after = 0; await showPair(); });
 $("export").onclick = () => attempt(async () => { state = await api("export", {job: state.id}); render(); });
 $("new").onclick = () => {
   $("setup").hidden = false;
   $("review").hidden = $("results").hidden = true;
   $("files-form").reset();
+  selectMode("incoming");
   $("step-files").setAttribute("aria-current", "step");
   $("step-review").removeAttribute("aria-current");
   $("step-export").removeAttribute("aria-current");
   $("source").focus();
 };
+selectMode("incoming");
 attempt(refresh);
 </script>
 </body>
