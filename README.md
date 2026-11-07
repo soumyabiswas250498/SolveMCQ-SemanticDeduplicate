@@ -124,13 +124,19 @@ another batch. Sync scans eligible documents and embeds only new or changed
 index payloads. Archived, inactive, soft-deleted, and removed records are
 pruned from the index. A failed sync can be retried before matching.
 
-Start a disposable MongoDB container, bound to your own machine:
+Install [Docker Desktop for Mac](https://docs.docker.com/desktop/setup/install/mac-install/),
+open it once, and wait until Docker is running. From this project folder:
 
 ```sh
-docker run -d --name solvemcq-mongo-test \
-  -p 127.0.0.1:27018:27017 -v solvemcq-mongo-test:/data/db \
-  mongodb/mongodb-community-server:latest
+docker compose up -d
+docker compose ps
+docker compose exec mongodb mongosh --quiet --eval 'db.adminCommand({ping: 1})'
+curl -fsS http://127.0.0.1:6333/readyz
 ```
+
+Both test services bind to loopback. The Compose volumes preserve their data
+across container restarts. If an earlier standalone `solvemcq-mongo-test`
+container is running on port 27018, stop it before starting this stack.
 
 Connect MongoDB Compass to `mongodb://127.0.0.1:27018` and import a small
 Extended JSON sample into `solvemcq_test.questions`. Preserve the MongoDB
@@ -143,8 +149,10 @@ expanding the test. If you already have a separate local MongoDB, point
 ```sh
 python -m pip install -e '.[embeddings,review,bank]'
 solvemcq-bank --database solvemcq_test --bank local-test \
+  --qdrant-url http://127.0.0.1:6333 \
   --baseline-report output/baseline/review_candidates.json
-solvemcq incoming.json --bank local-test --output output/incoming
+solvemcq incoming.json --bank local-test --qdrant-url http://127.0.0.1:6333 \
+  --output output/incoming
 ```
 
 For an incoming single-subject batch without `subjectId`, add

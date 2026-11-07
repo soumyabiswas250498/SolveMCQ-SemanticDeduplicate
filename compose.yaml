@@ -1,0 +1,22 @@
+name: solvemcq-local
+
+services:
+  mongodb:
+    image: mongodb/mongodb-community-server:8.0-ubi8
+    ports:
+      - "127.0.0.1:27018:27017"
+    volumes:
+      - mongodb-data:/data/db
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
+volumes:
+  mongodb-data:
+  qdrant-data:
