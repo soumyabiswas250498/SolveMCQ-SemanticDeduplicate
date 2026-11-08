@@ -149,6 +149,14 @@ class ReviewJob:
             "unattributed_distinct_pairs": legacy["distinct"],
             "unattributed_deferred_pairs": legacy["needs_review"],
         }
+        attribution = {(pair_id, source): verdict for pair_id, source, verdict in history}
+        for verdict in ("duplicate", "distinct"):
+            sources = Counter(
+                next((source for source in ("manual", "agent") if attribution.get((pair_id, source)) == verdict),
+                     "unknown")
+                for pair_id, decision in decisions.items() if decision.verdict == verdict
+            )
+            metrics[f"{verdict}_sources"] = {source: sources[source] for source in ("agent", "manual", "unknown")}
         return decisions, selections, metrics
 
     def summary(self):
@@ -156,10 +164,32 @@ class ReviewJob:
         covered = {pair_id for item in selections.values() for pair_id in item["pairs"]}
         counts = Counter(decision.verdict for pair_id, decision in decisions.items() if pair_id not in covered)
         total = len(self.report.pairs)
+        original_disputes = {
+            pair_id: group["id"] for group in self.groups({}, {}).values() for pair_id in group["pairs"]
+        }
+        card_pairs = defaultdict(list)
+        for pair_id in range(1, total + 1):
+            decision = decisions.get(pair_id)
+            if decision and decision.verdict in ("duplicate", "distinct"):
+                card_pairs[decision.verdict].append(pair_id)
+            elif pair_id not in covered:
+                card_pairs["needs_review" if decision else "pending"].append(pair_id)
+        cards = {}
+        for status in ("pending", "duplicate", "distinct", "needs_review"):
+            pairs = card_pairs[status]
+            cards[status] = {
+                "disputes": len({original_disputes[pair_id] for pair_id in pairs}),
+                "questions": len({question_id for pair_id in pairs
+                                  for question_id in self.report.pairs[pair_id - 1].question_ids}),
+                "pairs": len(pairs),
+            }
+            if status in ("duplicate", "distinct"):
+                cards[status]["sources"] = metrics[f"{status}_sources"]
         result = {
             "job_id": self.job_id,
             "batch_id": self.report.batch_id,
             "candidate_pairs": total,
+            "cards": cards,
             "open_disputes": sum(
                 group["status"] in ("pending", "needs_review")
                 for group in self.groups(decisions, selections).values()

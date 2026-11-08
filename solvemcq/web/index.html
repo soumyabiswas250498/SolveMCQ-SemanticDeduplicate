@@ -84,6 +84,7 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
     <div class="row"><h2 id="review-title" tabindex="-1">Review matches</h2><button id="new" type="button">Start another batch</button></div>
     <p class="sub" id="dispute-summary"></p>
     <div class="stats" id="stats"></div>
+    <p class="sub">Cards count original disputes and distinct questions within each category, including bank matches. Categories can overlap. AI and manual totals count pair verdicts.</p>
     <p id="pair-progress" class="sub"></p>
     <progress id="progress" max="1" value="0" aria-label="Pairs reviewed"></progress>
     <p class="sub" id="agent-timing" hidden></p>
@@ -216,11 +217,20 @@ function render() {
     $("pair-status").textContent = "";
   }
   $("stats").replaceChildren(...[
-    ["Pairs awaiting review", r.pending], ["Recorded duplicate verdicts", r.recorded_duplicate_verdicts ?? r.duplicates],
-    ["Recorded different verdicts", r.recorded_distinct_verdicts ?? r.distinct], ["Pairs awaiting your decision", r.needs_review]
-  ].map(([label, count]) => {
+    ["pending", "Awaiting review"], ["duplicate", "Duplicate verdicts"],
+    ["distinct", "Different verdicts"], ["needs_review", "Awaiting your decision"]
+  ].map(([status, label]) => {
     const item = node("div", undefined, "stat");
-    item.append(node("strong", count), label);
+    const {disputes, questions, pairs, sources} = r.cards[status];
+    item.append(
+      node("strong", `${disputes} ${disputes === 1 ? "dispute" : "disputes"}`),
+      node("div", label),
+      node("div", `${questions} ${questions === 1 ? "question" : "questions"} · ${pairs} ${pairs === 1 ? "pair" : "pairs"}`)
+    );
+    if (sources) {
+      item.append(node("div", `AI agent ${sources.agent} · Manual ${sources.manual}` +
+        (sources.unknown ? ` · Unknown ${sources.unknown}` : "")));
+    }
     return item;
   }));
   $("progress").max = r.candidate_pairs || 1;

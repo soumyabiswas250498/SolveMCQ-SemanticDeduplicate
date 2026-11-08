@@ -135,6 +135,7 @@ class BrowserWorkflowTest(unittest.TestCase):
                 state = wait_for("agent_running", False)
             self.assertEqual(state["review"]["pending"], 0)
             self.assertEqual(state["review"]["needs_review"], 3)
+            self.assertEqual(state["review"]["cards"]["needs_review"], {"disputes": 1, "questions": 3, "pairs": 3})
             self.assertEqual(state["agent_reviewed_pairs"], 3)
             self.assertGreater(state["review_timing"]["elapsed_seconds"], 0)
             self.assertEqual(state["review_timing"]["remaining_seconds"], 0)
@@ -160,6 +161,12 @@ class BrowserWorkflowTest(unittest.TestCase):
             self.assertEqual(metrics["agent_deferred_pairs"], 3)
             self.assertEqual(metrics["agent_resolved_pairs"], 0)
             self.assertEqual(metrics["manual_pairs_resolved"], 3)
+            cards = state["review"]["cards"]
+            self.assertEqual(cards["duplicate"], {
+                "disputes": 1, "questions": 3, "pairs": 2,
+                "sources": {"agent": 0, "manual": 2, "unknown": 0},
+            })
+            self.assertEqual(cards["distinct"]["sources"], {"agent": 0, "manual": 1, "unknown": 0})
             conflict_id = state["export"]["conflicts"][0]["distinct_pair_ids"][0]
             pair = workflow.pair(job_id, "needs_review", conflict=conflict_id)
             workflow.decide(job_id, {
