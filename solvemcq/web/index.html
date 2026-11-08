@@ -196,21 +196,21 @@ function render() {
   $("setup").hidden = ready || state.status === "running";
   $("review").hidden = $("results").hidden = !ready;
   document.querySelectorAll(".steps li").forEach(item => item.removeAttribute("aria-current"));
-  $(ready ? (state.export ? "step-export" : "step-review") : "step-files").setAttribute("aria-current", "step");
+  $(ready ? (state.export && !state.export_blocker ? "step-export" : "step-review") : "step-files").setAttribute("aria-current", "step");
   notice(state.message || "", state.status === "error");
   if (!ready) return;
   const r = state.review;
   const baseline = state.mode === "baseline";
   $("review-title").textContent = baseline ? "Review existing bank" : "Review new questions";
-  $("results-note").textContent = baseline
+  $("results-note").textContent = state.export_blocker || (baseline
     ? "The ZIP includes the retained and dropped bank records and the unresolved review report."
-    : "Use the _import_ready.json file inside the ZIP to import ready questions. Pending questions are listed in _unresolved.json.";
+    : "Use the _import_ready.json file inside the ZIP to import ready questions.");
   $("original-bank-label").hidden = !baseline || !!state.bank_snapshot_full;
   $("review-list").hidden = $("review-workspace").hidden = !manual || !!state.agent_running;
   $("manual").hidden = !!state.agent_running;
   $("agent").hidden = !!state.agent_running || r.pending === 0;
   $("pause").hidden = !state.agent_running;
-  $("export").hidden = !!state.agent_running;
+  $("export").disabled = !!state.export_blocker;
   if (!manual || state.agent_running) {
     $("pair-area").hidden = true;
     $("pair-status").textContent = "";
@@ -260,24 +260,38 @@ function render() {
   ].filter(Boolean).join(" · ");
   const downloads = $("downloads");
   downloads.replaceChildren();
-  if (state.export) {
+  if (state.export_conflicts?.length) {
+    const list = node("details");
+    list.open = true;
+    list.append(node("summary", "See conflicts and blocked groups"));
+    const rows = node("ul");
+    for (const conflict of state.export_conflicts) {
+      const item = node("li", conflict.reasons.join(". "));
+      for (const pairId of [...conflict.duplicate_pair_ids, ...conflict.distinct_pair_ids]) {
+        item.append(" ", button(`Review pair ${pairId}`, () => attempt(async () => {
+          manual = true;
+          render();
+          queue = "all";
+          await showDispute(null, pairId);
+          $("review-title").scrollIntoView();
+        })));
+      }
+      rows.append(item);
+    }
+    list.append(rows);
+    downloads.append(list);
+  }
+  if (state.export && !state.export_blocker) {
     const summary = state.export.summary;
     if (!state.export.files?.["results.zip"]) {
       downloads.append(node("p", "Click Preview results again to generate the downloads."));
       return;
     }
-    const kept = baseline && !summary.complete ? "provisionally kept" : "unique";
-    const held = !baseline && summary.held_questions ? ` · ${summary.held_questions} held for review` : "";
     downloads.append(node("h3", "Question export"),
-      node("p", `${summary.retained_questions} ${kept} · ${summary.dropped_questions} dropped${held}`));
+      node("p", `${summary.retained_questions} unique · ${summary.dropped_questions} dropped`));
     if (summary.previously_excluded_questions) {
       downloads.append(node("p",
         `${summary.proposed_archives} newly dropped in this review · ${summary.previously_excluded_questions} already excluded before the scan`,
-        "sub"));
-    }
-    if (!summary.complete) {
-      downloads.append(node("p",
-        `Provisional: ${summary.pending_pairs} pending pairs, ${summary.deferred_pairs} deferred pairs, ${summary.blocked_duplicate_groups} blocked groups.`,
         "sub"));
     }
     if (state.export.preview && state.export.preview.length) {
@@ -286,26 +300,6 @@ function render() {
       const rows = node("ul");
       for (const row of state.export.preview) {
         rows.append(node("li", `Keep: ${row.keep_question} · Archive: ${row.archive_question}`));
-      }
-      list.append(rows);
-      downloads.append(list);
-    }
-    if (state.export.conflicts && state.export.conflicts.length) {
-      const list = node("details");
-      list.append(node("summary", "See conflicts and blocked groups"));
-      const rows = node("ul");
-      for (const conflict of state.export.conflicts) {
-        const item = node("li", conflict.reasons.join(". "));
-        for (const pairId of [...conflict.duplicate_pair_ids, ...conflict.distinct_pair_ids]) {
-          item.append(" ", button(`Review pair ${pairId}`, () => attempt(async () => {
-            manual = true;
-            render();
-            queue = "all";
-            await showDispute(null, pairId);
-            $("review-title").scrollIntoView();
-          })));
-        }
-        rows.append(item);
       }
       list.append(rows);
       downloads.append(list);

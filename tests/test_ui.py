@@ -66,11 +66,15 @@ class BrowserWorkflowTest(unittest.TestCase):
                     self.assertEqual(len(pair["questions"]), 2)
                     existing = next(item for item in pair["questions"] if "mongo_id" in item)
                     self.assertEqual(existing["options"], bank[0]["options"])
+                    self.assertIn("Awaiting review", state["export_blocker"])
+                    with self.assertRaises(HTTPError) as blocked:
+                        call("/api/export", {"job": job})
+                    self.assertIn("Awaiting review", json.load(blocked.exception)["error"])
+                    call("/api/decide", {"job": job, "pair_id": pair["pair_id"], "verdict": "distinct"})
+                    self.assertEqual(LocalWorkflow(root).snapshot()["review"]["distinct"], 1)
                     state = call("/api/export", {"job": job})
+                    self.assertEqual(state["export"]["summary"]["already_in_bank_questions"], 1)
                     summary = state["export"]["summary"]
-                    self.assertEqual((summary["retained_questions"], summary["held_questions"]), (0, 1))
-                    self.assertEqual(call(f"/api/download?job={job}&file=unique.json"), [])
-                    self.assertEqual(call(f"/api/download?job={job}&file=import_ready.json"), [])
                     with urlopen(f"http://{server.host}/api/download?job={job}&file=results.zip") as response:
                         self.assertEqual(response.headers.get_content_type(), "application/zip")
                         self.assertEqual(response.headers.get_filename(), "ইতিহাস_results.zip")
@@ -78,12 +82,6 @@ class BrowserWorkflowTest(unittest.TestCase):
                             self.assertEqual(set(archive.namelist()), set(summary["files"]))
                             self.assertEqual(len(archive.namelist()), 8)
                             self.assertEqual(archive.read("ইতিহাস.json"), original.encode())
-                            unresolved = json.loads(archive.read("ইতিহাস_unresolved.json"))
-                            self.assertEqual([item["record"] for item in unresolved["held_questions"]], incoming[1:])
-                    call("/api/decide", {"job": job, "pair_id": pair["pair_id"], "verdict": "distinct"})
-                    self.assertEqual(LocalWorkflow(root).snapshot()["review"]["distinct"], 1)
-                    state = call("/api/export", {"job": job})
-                    self.assertEqual(state["export"]["summary"]["already_in_bank_questions"], 1)
                     self.assertEqual(call(f"/api/download?job={job}&file=import_ready.json"), incoming[1:])
                     self.assertEqual(call(f"/api/download?job={job}&file=unique.json"), incoming[1:])
                     self.assertEqual(call(f"/api/download?job={job}&file=drop.json"), incoming[:1])
@@ -135,6 +133,9 @@ class BrowserWorkflowTest(unittest.TestCase):
                 state = wait_for("agent_running", False)
             self.assertEqual(state["review"]["pending"], 0)
             self.assertEqual(state["review"]["needs_review"], 3)
+            self.assertIn("Awaiting your decision", state["export_blocker"])
+            with self.assertRaisesRegex(ValueError, "Awaiting your decision"):
+                workflow.export(job_id)
             self.assertEqual(state["review"]["cards"]["needs_review"], {"disputes": 1, "questions": 3, "pairs": 3})
             self.assertEqual(state["agent_reviewed_pairs"], 3)
             self.assertGreater(state["review_timing"]["elapsed_seconds"], 0)
@@ -155,9 +156,13 @@ class BrowserWorkflowTest(unittest.TestCase):
                     "keep_question_id": keeper["question_id"] if keeper else None,
                 })
 
-            state = workflow.export(job_id)
-            self.assertEqual(state["export"]["summary"]["proposed_archives"], 0)
-            metrics = state["export"]["summary"]["review_metrics"]
+            state = workflow.snapshot()
+            self.assertIn("conflicting decisions", state["export_blocker"])
+            with self.assertRaisesRegex(ValueError, "conflicting decisions"):
+                workflow.export(job_id)
+            with self.assertRaises(ValueError):
+                workflow.download(job_id, "results.zip")
+            metrics = workflow.job().export_review_state()[2]
             self.assertEqual(metrics["agent_deferred_pairs"], 3)
             self.assertEqual(metrics["agent_resolved_pairs"], 0)
             self.assertEqual(metrics["manual_pairs_resolved"], 3)
@@ -167,7 +172,7 @@ class BrowserWorkflowTest(unittest.TestCase):
                 "sources": {"agent": 0, "manual": 1, "unknown": 0},
             })
             self.assertEqual(cards["distinct"]["sources"], {"agent": 0, "manual": 1, "unknown": 0})
-            conflict_id = state["export"]["conflicts"][0]["distinct_pair_ids"][0]
+            conflict_id = state["export_conflicts"][0]["distinct_pair_ids"][0]
             pair = workflow.pair(job_id, "needs_review", conflict=conflict_id)
             workflow.decide(job_id, {
                 "pair_id": conflict_id, "conflict": conflict_id, "verdict": "duplicate",
@@ -264,6 +269,8 @@ class BrowserWorkflowTest(unittest.TestCase):
             saved = workflow.dispute_groups(job_id, group_id)
             self.assertEqual(saved["keep"], sorted(keep))
             self.assertEqual(saved["reason"], "Two distinct facts")
+            pair = workflow.pair(job_id, "pending")
+            workflow.decide(job_id, {"pair_id": pair["pair_id"], "verdict": "distinct"})
             state = workflow.export(job_id)
             summary = state["export"]["summary"]
             self.assertEqual(summary["proposed_archives"], 1)

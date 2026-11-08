@@ -21,7 +21,7 @@ from qdrant_client import QdrantClient
 from .agent import review_candidates, subscription_agent
 from .bank import baseline_report, read_bank_documents, sync_bank
 from .cli import run, write_results
-from .finalize import export_baseline, finalize
+from .finalize import export_baseline, finalize, reconcile
 from .input import load_questions
 from .pipeline import embedder
 from .review import Decision, ReviewJob
@@ -88,7 +88,9 @@ class LocalWorkflow:
         with self.lock:
             result = {**self.state}
             if result["status"] == "ready":
-                result["review"] = self.job().summary()
+                job = self.job()
+                result["review"] = job.summary()
+                result["export_blocker"], result["export_conflicts"] = self.export_blocker(job, result["review"])
                 pending = result["review"]["pending"]
                 elapsed = result.get("agent_elapsed_seconds", 0)
                 if self.agent_checkpoint is not None:
@@ -250,10 +252,33 @@ class LocalWorkflow:
                     options = self.originals["incoming"].get(item["input_row"], [])
                 item["options"] = options
 
+    def export_blocker(self, job, review):
+        if self.state.get("agent_running"):
+            return "Wait for AI review to finish before previewing results.", []
+        awaiting = review["cards"]["needs_review"]["disputes"]
+        pending = review["cards"]["pending"]["disputes"]
+        if awaiting and pending:
+            return "Finish the disputes in Awaiting review and Awaiting your decision before previewing results.", []
+        if awaiting:
+            return "Resolve the disputes in Awaiting your decision before previewing results.", []
+        if pending:
+            return "Finish the disputes in Awaiting review before previewing results.", []
+        protected = {
+            key for key, item in job.report.questions.items()
+            if item.mongo_id is not None and self.state.get("mode") != "baseline"
+        }
+        _, _, unresolved, conflicts, _, _ = reconcile(job, lambda key: {"question_id": key}, protected)
+        if conflicts:
+            return "Resolve the conflicting decisions below before previewing results.", conflicts
+        if unresolved:
+            return "Finish reviewing all disputes before previewing results.", []
+        return "", []
+
     def conflict_ids(self):
-        export = self.state.get("export") or {}
+        job = self.job()
+        _, conflicts = self.export_blocker(job, job.summary())
         return {
-            pair_id for group in export.get("conflicts", [])
+            pair_id for group in conflicts
             for key in ("duplicate_pair_ids", "distinct_pair_ids") for pair_id in group[key]
         }
 
@@ -263,7 +288,7 @@ class LocalWorkflow:
             job = self.job()
             if conflict is not None:
                 if conflict not in self.conflict_ids():
-                    raise ValueError("Preview results again to open this conflict.")
+                    raise ValueError("This conflict changed. Choose a current conflict.")
                 decision = job.saved_decisions()[conflict]
                 pairs = [job.describe_pair(conflict, f"Previous decision: {decision.verdict}. {decision.reason}")]
             else:
@@ -382,7 +407,7 @@ class LocalWorkflow:
             previous = None
             if data.get("conflict") is not None:
                 if data["conflict"] != decision.pair_id or decision.pair_id not in self.conflict_ids():
-                    raise ValueError("Preview results again to revise this conflict.")
+                    raise ValueError("This conflict changed. Reopen it before saving.")
                 previous = job.saved_decisions()[decision.pair_id]
             job.submit(job.job_id, [decision], replace=previous, source="manual")
             self.update(export=None)
@@ -391,8 +416,10 @@ class LocalWorkflow:
     def export(self, job_id, original_bank=None, original_bank_name=None):
         with self.lock:
             path = self.require_ready(job_id)
-            if self.state.get("agent_running"):
-                raise ValueError("Pause agent review before preparing results.")
+            job = self.job()
+            blocker, _ = self.export_blocker(job, job.summary())
+            if blocker:
+                raise ValueError(blocker)
             name = f"export-{uuid.uuid4().hex}"
             if self.state.get("mode") == "baseline":
                 bank_source = (path / "bank.json").read_text(encoding="utf-8-sig")
@@ -414,10 +441,10 @@ class LocalWorkflow:
                     path / "incoming.json", report, db, path / name, self.state["subject"], reviewed_only=True,
                 )
             export = {"directory": name, "summary": summary}
-            unresolved = json.loads((path / name / "unresolved.json").read_text(encoding="utf-8"))
-            export["conflicts"] = unresolved["blocked_duplicate_groups"]
             if self.state.get("mode") == "baseline":
                 export["preview"] = json.loads((path / name / "proposed_archives.json").read_text(encoding="utf-8"))
+            if not summary["complete"]:
+                raise ValueError("Finish reviewing all disputes before previewing results.")
             self.package_export(path, export)
             self.update(export=export)
             return self.snapshot()
@@ -471,8 +498,12 @@ class LocalWorkflow:
         with self.lock:
             path = self.require_ready(job_id)
             export = self.state.get("export")
-            if not export or filename not in export.get("files", {}):
+            if not export or not export["summary"].get("complete") or filename not in export.get("files", {}):
                 raise ValueError("Preview the results first to generate the download.")
+            job = self.job()
+            blocker, _ = self.export_blocker(job, job.summary())
+            if blocker:
+                raise ValueError(blocker)
             return (path / export["directory"] / filename).read_bytes(), export["files"][filename]
 
 

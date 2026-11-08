@@ -207,8 +207,7 @@ the app with `solvemcq-ui` and open `http://127.0.0.1:8766` on the same computer
    remain checked when reviewing an incoming batch. Use **Previous**, **Next**,
    or the scrollable list to browse or revisit a saved selection.
 5. Use **Preview results**. Baseline jobs propose archive IDs and keepers.
-   Incoming jobs prepare an import-ready JSON. The preview lists conflicts
-   that can be opened and revised before exporting again.
+   Incoming jobs prepare an import-ready JSON. Resolve all disputes and conflicting decisions before previewing or downloading results.
 
 The app saves the current job under `.solvemcq/browser`. Keep one running app
 per data directory. Archive proposals and import-ready files are exports for
