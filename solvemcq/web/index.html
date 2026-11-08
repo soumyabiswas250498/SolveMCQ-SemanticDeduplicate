@@ -11,22 +11,25 @@ header{background:var(--navy);color:white} .bar,main{width:100%;margin:auto;padd
 .bar{display:flex;align-items:center;justify-content:space-between;gap:12px}.brand{font-size:21px;font-weight:800}.local{font-size:14px;color:#d5e4f8}
 main{padding-top:38px;padding-bottom:48px} h1,h2,h3,p{margin:0} h1{font-size:clamp(30px,5vw,48px);line-height:1.15;letter-spacing:-.045em;margin:10px 0}
 h2{font-size:27px;line-height:1.25;letter-spacing:-.02em} h3{font-size:15px;color:var(--muted);margin-bottom:8px}.sub{color:var(--muted);margin-top:7px}
-.steps{display:flex;gap:8px;flex-wrap:wrap;margin:24px 0 20px;padding:0;list-style:none}.steps li{background:#e7edf5;color:#344962;padding:5px 13px;border-radius:20px;font-size:14px;font-weight:650}
+.steps{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0 12px;padding:0;list-style:none}.steps li{background:#e7edf5;color:#344962;padding:5px 13px;border-radius:20px;font-size:14px;font-weight:650}
 .steps li[aria-current]{background:var(--blue);color:white}
-.panel{background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:24px;margin-top:16px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.panel{background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:18px;margin-top:12px}.row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .files,.pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;margin:18px 0}
 .file,.question{display:block;border:1px solid var(--line);border-radius:12px;padding:16px;background:#fafcff;min-width:0;overflow-wrap:anywhere}
 label{font-weight:700} label small,.file p{display:block;font-weight:400;color:var(--muted);font-size:15px}
 input[type=file]{font:inherit;font-size:15px;display:block;width:100%;margin-top:12px}
 input::file-selector-button{font:inherit;font-weight:700;border:1px solid #a7b8ce;background:white;color:var(--blue);border-radius:8px;padding:8px 10px;margin-right:8px;cursor:pointer}
 input[type=text]{font:inherit;border:1px solid #a7b8ce;border-radius:8px;padding:8px 10px;display:block;width:min(100%,450px);margin:7px 0}
-button,.button{display:inline-flex;align-items:center;justify-content:center;min-height:46px;padding:9px 16px;border:1px solid #a7b8ce;border-radius:9px;background:white;color:var(--blue);font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}
+button,.button{display:inline-flex;align-items:center;justify-content:center;min-height:38px;padding:6px 12px;border:1px solid #a7b8ce;border-radius:9px;background:white;color:var(--blue);font:inherit;font-weight:700;cursor:pointer;text-decoration:none;text-align:center}
 .primary{background:var(--blue);color:white;border-color:var(--blue)}button:disabled{opacity:.55;cursor:wait}button:hover:not(:disabled),.button:hover{filter:brightness(.93)}
 button[aria-pressed="true"]{background:#e7effd;border-color:#8ca8d2}
 :focus-visible{outline:3px solid #226bd0;outline-offset:3px}
-.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:16px}details{margin:14px 0}summary{cursor:pointer;font-weight:650;color:var(--blue)}
+.actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:10px}details{margin:14px 0}summary{cursor:pointer;font-weight:650;color:var(--blue)}
 .notice{padding:12px 14px;border-radius:9px;background:#eef3fb;color:#233d60;margin-top:12px}.error{background:#fff0ed;color:#8a261c}
-.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}.stat{padding:11px;border-radius:9px;background:#edf2f8;font-size:14px;color:var(--muted)}.stat strong{font-size:25px;line-height:1.2;display:block;color:var(--ink)}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:1fr;gap:8px;margin:10px 0}
+.stat{padding:9px 11px;border-radius:8px;background:#edf2f8;font-size:13px;line-height:1.35;color:var(--muted)}
+.stat h3{margin:0 0 3px;font-size:14px;color:var(--ink)}.stat strong{display:block;font-size:19px;color:var(--ink)}
+.stat p{margin-top:3px}.review-help{font-size:13px;margin:6px 0;color:var(--muted)}
 progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--blue)}.answer{color:var(--green);background:var(--pale);border-radius:8px;padding:8px 10px;margin-top:12px;font-weight:650}.question ol{padding-left:23px;margin-bottom:4px}
 .question p{font-size:20px;line-height:1.45;font-weight:650}.result{margin-top:14px} [hidden]{display:none!important}
 .pair{grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))}
@@ -82,13 +85,11 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
 
   <section id="review" class="panel" aria-labelledby="review-title" hidden>
     <div class="row"><h2 id="review-title" tabindex="-1">Review matches</h2><button id="new" type="button">Start another batch</button></div>
-    <p class="sub" id="dispute-summary"></p>
+    <p class="sub" id="scan-summary"></p>
     <div class="stats" id="stats"></div>
-    <p class="sub">Cards count original disputes and distinct questions within each category, including bank matches. Categories can overlap. AI and manual totals count pair verdicts.</p>
-    <p id="pair-progress" class="sub"></p>
+    <details class="review-help"><summary>How counts work</summary>Cards count original disputes and distinct questions, including bank matches. Categories can overlap. AI and manual totals count pair verdicts.</details>
     <progress id="progress" max="1" value="0" aria-label="Pairs reviewed"></progress>
     <p class="sub" id="agent-timing" hidden></p>
-    <p class="sub" id="scan-summary"></p>
     <div class="actions" id="review-method">
       <button id="manual" type="button">Review manually</button>
       <button id="agent" type="button" class="primary">Let the agent review</button>
@@ -200,9 +201,7 @@ function render() {
   if (!ready) return;
   const r = state.review;
   const baseline = state.mode === "baseline";
-  const disputes = r.open_disputes === 1 ? "dispute" : "disputes";
-  $("review-title").textContent = `${r.open_disputes} ${disputes} to review`;
-  $("dispute-summary").textContent = `${state.scan.input_questions} ${baseline ? "bank" : "uploaded"} questions scanned · ${r.candidate_pairs} candidate pairs found`;
+  $("review-title").textContent = baseline ? "Review existing bank" : "Review new questions";
   $("results-note").textContent = baseline
     ? "The ZIP includes the retained and dropped bank records and the unresolved review report."
     : "Use the _import_ready.json file inside the ZIP to import ready questions. Pending questions are listed in _unresolved.json.";
@@ -223,12 +222,14 @@ function render() {
     const item = node("div", undefined, "stat");
     const {disputes, questions, pairs, sources} = r.cards[status];
     item.append(
-      node("strong", `${disputes} ${disputes === 1 ? "dispute" : "disputes"}`),
-      node("div", label),
-      node("div", `${questions} ${questions === 1 ? "question" : "questions"} · ${pairs} ${pairs === 1 ? "pair" : "pairs"}`)
+      node("h3", label),
+      node("strong", `${disputes} ${disputes === 1 ? "dispute" : "disputes"}`)
     );
-    if (sources) {
-      item.append(node("div", `AI agent ${sources.agent} · Manual ${sources.manual}` +
+    if (pairs) {
+      item.append(node("p", `${questions} ${questions === 1 ? "question" : "questions"} · ${pairs} ${pairs === 1 ? "pair" : "pairs"}`));
+    }
+    if (sources && pairs) {
+      item.append(node("p", `AI agent ${sources.agent} · Manual ${sources.manual}` +
         (sources.unknown ? ` · Unknown ${sources.unknown}` : "")));
     }
     return item;
@@ -236,12 +237,8 @@ function render() {
   $("progress").max = r.candidate_pairs || 1;
   const resolved = r.candidate_pairs - r.pending - r.needs_review;
   $("progress").value = r.candidate_pairs ? resolved : 1;
-  $("pair-progress").textContent = [
-    `${r.agent_resolved_pairs} pairs decided by agent`,
-    r.needs_review ? `${r.needs_review} awaiting your decision` : "",
-    r.pending ? `${r.pending} awaiting review` : "",
-    `${resolved} of ${r.candidate_pairs} pairs resolved`
-  ].filter(Boolean).join(" · ");
+  $("progress").hidden = !state.agent_running;
+  $("progress").setAttribute("aria-valuetext", `${resolved} of ${r.candidate_pairs} pairs resolved`);
   const timing = state.review_timing;
   const timingLine = $("agent-timing");
   timingLine.hidden = !state.agent_running && !timing?.elapsed_seconds;
@@ -252,10 +249,11 @@ function render() {
     timingLine.textContent = `Agent time spent: ${duration(timing.elapsed_seconds)} · Estimated agent time remaining: ${remaining}`;
   }
   const scan = state.scan;
-  $("scan-summary").textContent = `${scan.input_questions} questions checked` +
-    (baseline ? "" : ` · ${scan.exact_duplicates} exact repeats`) +
-    (scan.bank ? ` · ${scan.already_in_bank} IDs already in the bank` : "") +
-    (r.resolved_by_selection ? ` · ${r.resolved_by_selection} pairs resolved by group selections` : "");
+  $("scan-summary").textContent = [
+    `${scan.input_questions} ${baseline ? "bank" : "uploaded"} questions scanned`,
+    !baseline && scan.exact_duplicates ? `${scan.exact_duplicates} exact repeats` : "",
+    scan.already_in_bank ? `${scan.already_in_bank} IDs already in the bank` : ""
+  ].filter(Boolean).join(" · ");
   const downloads = $("downloads");
   downloads.replaceChildren();
   if (state.export) {
@@ -264,34 +262,10 @@ function render() {
       downloads.append(node("p", "Click Preview results again to generate the downloads."));
       return;
     }
-    if (summary.review_metrics) {
-      const m = summary.review_metrics;
-      const stats = node("div", undefined, "stats");
-      const count = (label, value) => {
-        const item = node("div", undefined, "stat");
-        item.append(node("strong", value), label);
-        stats.append(item);
-      };
-      const agentUnavailable = m.unattributed_pairs && !m.agent_resolved_pairs && !m.agent_deferred_pairs;
-      count("Pairs resolved by agent", agentUnavailable ? "—" : m.agent_resolved_pairs);
-      count("Agent verdict: duplicate pairs", agentUnavailable ? "—" : m.agent_duplicate_pairs);
-      count("Agent verdict: different pairs", agentUnavailable ? "—" : m.agent_distinct_pairs);
-      count("Pairs sent to manual review by agent", agentUnavailable ? "—" : m.agent_deferred_pairs);
-      count("Dispute groups resolved manually", m.manual_groups_resolved);
-      count("Individual pairs resolved manually", m.manual_pairs_resolved);
-      downloads.append(node("h3", "Review decisions"), stats);
-      if (m.unattributed_pairs) {
-        downloads.append(node("p",
-          `${m.unattributed_pairs} older verdicts have no saved reviewer: ${m.unattributed_duplicate_pairs} duplicate, ${m.unattributed_distinct_pairs} different, ${m.unattributed_deferred_pairs} deferred.`,
-          "sub"));
-      }
-    } else {
-      downloads.append(node("p", "Click Preview results again to generate the review breakdown.", "sub"));
-    }
     const kept = baseline && !summary.complete ? "provisionally kept" : "unique";
-    const held = !baseline && summary.held_questions ? ` + ${summary.held_questions} held for review` : "";
+    const held = !baseline && summary.held_questions ? ` · ${summary.held_questions} held for review` : "";
     downloads.append(node("h3", "Question export"),
-      node("p", `${summary.retained_questions} ${kept} + ${summary.dropped_questions} dropped${held} = ${summary.input_questions} original questions`));
+      node("p", `${summary.retained_questions} ${kept} · ${summary.dropped_questions} dropped${held}`));
     if (summary.previously_excluded_questions) {
       downloads.append(node("p",
         `${summary.proposed_archives} newly dropped in this review · ${summary.previously_excluded_questions} already excluded before the scan`,
