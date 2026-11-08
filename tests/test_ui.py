@@ -164,7 +164,7 @@ class BrowserWorkflowTest(unittest.TestCase):
             cards = state["review"]["cards"]
             self.assertEqual(cards["duplicate"], {
                 "disputes": 1, "questions": 3, "pairs": 2,
-                "sources": {"agent": 0, "manual": 2, "unknown": 0},
+                "sources": {"agent": 0, "manual": 1, "unknown": 0},
             })
             self.assertEqual(cards["distinct"]["sources"], {"agent": 0, "manual": 1, "unknown": 0})
             conflict_id = state["export"]["conflicts"][0]["distinct_pair_ids"][0]

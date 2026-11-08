@@ -123,7 +123,7 @@ class ReviewJob:
             db.execute("BEGIN")
             return self._decisions(db), self._selections(db)
 
-    def export_review_state(self):
+    def export_review_state(self, *, dispute_ids=None):
         uri = self.db_path.resolve().as_uri() + "?mode=ro"
         with closing(sqlite3.connect(uri, uri=True)) as db:
             db.execute("BEGIN")
@@ -151,22 +151,26 @@ class ReviewJob:
         }
         attribution = {(pair_id, source): verdict for pair_id, source, verdict in history}
         for verdict in ("duplicate", "distinct"):
-            sources = Counter(
-                next((source for source in ("manual", "agent") if attribution.get((pair_id, source)) == verdict),
-                     "unknown")
-                for pair_id, decision in decisions.items() if decision.verdict == verdict
-            )
-            metrics[f"{verdict}_sources"] = {source: sources[source] for source in ("agent", "manual", "unknown")}
+            by_source = defaultdict(set)
+            for pair_id, decision in decisions.items():
+                if decision.verdict != verdict:
+                    continue
+                source = next((source for source in ("manual", "agent")
+                               if attribution.get((pair_id, source)) == verdict), "unknown")
+                by_source[source].add(pair_id if dispute_ids is None else dispute_ids[pair_id])
+            metrics[f"{verdict}_sources"] = {
+                source: len(by_source[source]) for source in ("agent", "manual", "unknown")
+            }
         return decisions, selections, metrics
 
     def summary(self):
-        decisions, selections, metrics = self.export_review_state()
-        covered = {pair_id for item in selections.values() for pair_id in item["pairs"]}
-        counts = Counter(decision.verdict for pair_id, decision in decisions.items() if pair_id not in covered)
-        total = len(self.report.pairs)
         original_disputes = {
             pair_id: group["id"] for group in self.groups({}, {}).values() for pair_id in group["pairs"]
         }
+        decisions, selections, metrics = self.export_review_state(dispute_ids=original_disputes)
+        covered = {pair_id for item in selections.values() for pair_id in item["pairs"]}
+        counts = Counter(decision.verdict for pair_id, decision in decisions.items() if pair_id not in covered)
+        total = len(self.report.pairs)
         card_pairs = defaultdict(list)
         for pair_id in range(1, total + 1):
             decision = decisions.get(pair_id)

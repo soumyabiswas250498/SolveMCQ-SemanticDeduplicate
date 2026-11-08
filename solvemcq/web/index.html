@@ -87,7 +87,7 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
     <div class="row"><h2 id="review-title" tabindex="-1">Review matches</h2><button id="new" type="button">Start another batch</button></div>
     <p class="sub" id="scan-summary"></p>
     <div class="stats" id="stats"></div>
-    <details class="review-help"><summary>How counts work</summary>Cards count original disputes and distinct questions, including bank matches. Categories can overlap. AI and manual totals count pair verdicts.</details>
+    <details class="review-help"><summary>How counts work</summary>Cards count original disputes and distinct questions, including bank matches. Categories can overlap. A dispute can count for both AI and manual review if both contributed verdicts.</details>
     <progress id="progress" max="1" value="0" aria-label="Pairs reviewed"></progress>
     <p class="sub" id="agent-timing" hidden></p>
     <div class="actions" id="review-method">
@@ -229,8 +229,12 @@ function render() {
       item.append(node("p", `${questions} ${questions === 1 ? "question" : "questions"} · ${pairs} ${pairs === 1 ? "pair" : "pairs"}`));
     }
     if (sources && pairs) {
-      item.append(node("p", `AI agent ${sources.agent} · Manual ${sources.manual}` +
-        (sources.unknown ? ` · Unknown ${sources.unknown}` : "")));
+      const reviewerCount = (label, count) => `${label} ${count} ${count === 1 ? "dispute" : "disputes"}`;
+      item.append(node("p", [
+        reviewerCount("AI agent", sources.agent),
+        reviewerCount("Manual", sources.manual),
+        sources.unknown ? reviewerCount("Unknown", sources.unknown) : ""
+      ].filter(Boolean).join(" · ")));
     }
     return item;
   }));
