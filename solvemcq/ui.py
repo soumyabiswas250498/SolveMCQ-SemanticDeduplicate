@@ -472,6 +472,13 @@ class LocalWorkflow:
                 export["preview"] = json.loads((path / name / "proposed_archives.json").read_text(encoding="utf-8"))
             if not summary["complete"]:
                 raise ValueError("Finish reviewing all disputes before previewing results.")
+            export["questions"] = {}
+            for kind in ("unique", "drop"):
+                records = json.loads((path / name / f"{kind}.json").read_text(encoding="utf-8"))
+                export["questions"][kind] = [
+                    str(record.get("questionText") or record.get("question") or "Question text unavailable")
+                    for record in records[:20]
+                ]
             self.package_export(path, export)
             self.update(export=export)
             return self.snapshot()

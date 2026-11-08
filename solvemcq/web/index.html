@@ -143,6 +143,7 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
       <input id="original-bank" type="file" accept=".json,application/json">
     </label>
     <div class="actions"><button type="button" id="export" class="primary">Preview results</button></div>
+    <p id="export-status" class="sub" role="status" hidden></p>
     <div id="downloads" class="result" aria-live="polite"></div>
   </section>
 </main>
@@ -151,6 +152,7 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
 const token = "__LOCAL_TOKEN__";
 const $ = id => document.getElementById(id);
 let state = {};
+let previewOpen = false;
 let queue = "pending";
 let busy = false;
 let mode = "incoming";
@@ -239,6 +241,9 @@ function render() {
   $("agent").hidden = !!state.agent_running || r.pending === 0;
   $("pause").hidden = !state.agent_running;
   $("export").disabled = !!state.export_blocker;
+  const showPreview = !!(previewOpen && state.export?.questions && !state.export_blocker);
+  $("export").textContent = showPreview ? "Hide preview" : "Preview results";
+  $("export").setAttribute("aria-expanded", String(showPreview));
   if (!manual || state.agent_running) {
     $("pair-area").hidden = true;
     $("pair-status").textContent = "";
@@ -355,6 +360,28 @@ function render() {
       }
       list.append(rows);
       downloads.append(list);
+    }
+    if (showPreview) {
+      const preview = node("div", undefined, "files");
+      preview.id = "question-preview";
+      for (const [kind, label, total] of [
+        ["unique", "Kept questions", summary.retained_questions],
+        ["drop", "Dropped questions", summary.dropped_questions]
+      ]) {
+        const card = node("section", undefined, "file");
+        card.append(node("h3", label));
+        const questions = state.export.questions[kind];
+        if (questions.length) {
+          const rows = node("ol");
+          for (const question of questions) rows.append(node("li", question));
+          card.append(rows);
+          if (total > questions.length) card.append(node("p", `Showing the first ${questions.length} of ${total}. The ZIP contains the full list.`));
+        } else {
+          card.append(node("p", "No questions in this list."));
+        }
+        preview.append(card);
+      }
+      downloads.append(preview);
     }
     const links = node("div", undefined, "actions");
     const zip = node("a", "Download all results (ZIP)", "button primary");
@@ -508,6 +535,8 @@ $("files-form").addEventListener("submit", event => {
     queue = "pending";
     activeGroup = null;
     manual = false;
+    previewOpen = false;
+    $("export-status").hidden = true;
     await refresh();
   });
 });
@@ -551,9 +580,27 @@ for (const [id, filter] of [["pending", "pending"], ["deferred", "needs_review"]
 $("previous").onclick = () => moveDispute(-1);
 $("next").onclick = () => moveDispute(1);
 $("export").onclick = () => attempt(async () => {
-  const original = $("original-bank").files[0];
-  state = await api("export", {job: state.id, original_bank: original ? await readUpload(original) : undefined, original_bank_name: original?.name});
+  if (state.export_blocker) return;
+  const status = $("export-status");
+  status.hidden = true;
+  if (state.export?.questions && state.export.files?.["results.zip"]) {
+    previewOpen = !previewOpen;
+  } else {
+    status.textContent = "Preparing results…";
+    status.hidden = false;
+    $("export").textContent = "Preparing…";
+    try {
+      const original = $("original-bank").files[0];
+      state = await api("export", {job: state.id, original_bank: original ? await readUpload(original) : undefined, original_bank_name: original?.name});
+      previewOpen = true;
+      status.hidden = true;
+    } catch (error) {
+      status.textContent = error.message;
+      previewOpen = false;
+    }
+  }
   render();
+  if (previewOpen) $("question-preview")?.scrollIntoView({block: "nearest"});
 });
 $("new").onclick = () => {
   $("setup").hidden = false;

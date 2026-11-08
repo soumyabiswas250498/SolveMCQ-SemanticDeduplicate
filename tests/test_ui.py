@@ -79,6 +79,9 @@ class BrowserWorkflowTest(unittest.TestCase):
                     self.assertEqual(LocalWorkflow(root).snapshot()["review"]["distinct"], 1)
                     state = call("/api/export", {"job": job})
                     self.assertEqual(state["export"]["summary"]["already_in_bank_questions"], 1)
+                    self.assertEqual(state["export"]["questions"], {
+                        "unique": ["Where?"], "drop": ["Already saved?"],
+                    })
                     summary = state["export"]["summary"]
                     with urlopen(f"http://{server.host}/api/download?job={job}&file=results.zip") as response:
                         self.assertEqual(response.headers.get_content_type(), "application/zip")
