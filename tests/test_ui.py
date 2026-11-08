@@ -44,13 +44,14 @@ class BrowserWorkflowTest(unittest.TestCase):
                     identifier = "6a5f3cc8dc2d9d345c0d7358"
                     incoming = [
                         {"question": "Already saved?", "answer": "Yes", "id": identifier},
-                        {"question": "Where?", "answer": "Here"},
+                        {"question": "Where?", "answer": "Here", "language": "bn-BD"},
                     ]
                     bank = [{
                         "_id": {"$oid": identifier}, "subjectId": {"$oid": identifier},
-                        "questionText": "Existing question?", "correctOptionKey": "A",
+                        "questionText": "Existing question?", "correctOptionKey": "A", "language": "bn",
                         "options": [{"key": "A", "text": "Here"}, {"key": "B", "text": "There"}],
                     }]
+                    bank.append({**bank[0], "_id": "translation", "language": "en"})
                     original = "\ufeff" + json.dumps(incoming, indent=2) + "\r\n"
                     state = call("/api/start", {
                         "source": original, "source_name": "ইতিহাস.json", "bank": json.dumps(bank),
@@ -61,6 +62,10 @@ class BrowserWorkflowTest(unittest.TestCase):
                         state = call("/api/state")
                     self.assertEqual(state["status"], "ready", state)
                     self.assertEqual(state["scan"]["already_in_bank"], 1)
+                    self.assertEqual(state["scan"]["bank_candidate_pairs"], 1)
+                    self.assertEqual(state["scan_progress"]["done"], 2)
+                    self.assertEqual(state["scan_progress"]["total"], 2)
+                    self.assertIn("Indexing the question bank", [item["stage"] for item in state["scan_events"]])
                     job = state["id"]
                     pair = call(f"/api/pair?job={job}")
                     self.assertEqual(len(pair["questions"]), 2)
@@ -263,6 +268,8 @@ class BrowserWorkflowTest(unittest.TestCase):
                 "group": group_id, "members": group["members"], "keep": keep, "reason": "Two distinct facts",
             })
             self.assertEqual(state["review"]["resolved_by_selection"], 3)
+            self.assertEqual(state["review"]["manual_review"], {"completed": 1, "awaiting": 1, "deferred": 0})
+            self.assertIn("2 kept · 1 dropped", state["message"])
             self.assertEqual(state["review"]["open_disputes"], 1)
             self.assertEqual(state["review"]["pending"], 1)
             workflow = LocalWorkflow(root)

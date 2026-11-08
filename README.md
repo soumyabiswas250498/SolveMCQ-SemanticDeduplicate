@@ -36,7 +36,7 @@ The CLI rejects malformed JSON, including trailing commas, and reports the line 
 | `exact_duplicates.json` | Removed originals, input row and retained record ID |
 | `review_candidates.json` | Candidate pairs, both scores and question/answer text |
 
-Exact matches use normalized subject, question, answer, and ordered options when supplied. The first record is retained. The model embeds question text and correct-answer text separately. Same-subject question similarity retrieves candidates, and answer similarity adds review context. An answer mismatch can signal a conflicting key and remains visible for review. The search spans chapter and topic boundaries.
+Exact matches use normalized subject, question, answer, and ordered options when supplied. The first record is retained. The model embeds question text and correct-answer text separately. Same-subject question similarity retrieves candidates, and answer similarity adds review context. An answer mismatch can signal a conflicting key and remains visible for review. The search spans chapter and topic boundaries. Supply the `language` field (for example, `bn` or `en`) on incoming and bank records to keep translations separate. Untagged records remain eligible for comparison. An automatic duplicate group cannot merge records with different known languages through an untagged record. Refresh an existing bank index before matching against it. Run a new scan to apply the filter to an existing candidate report.
 
 The defaults of `--threshold 0.70 --top-k 12` are starting values. A record without a candidate can still have an undetected duplicate. Use a new output directory to rerun with different settings.
 
@@ -195,11 +195,11 @@ the app with `solvemcq-ui` and open `http://127.0.0.1:8766` on the same computer
    The app opens `output/baseline/review_candidates.json` and
    `.solvemcq/baseline-reviews.sqlite3` in the project folder. The live bank
    or an export supplies the original answer choices.
-3. Choose **Review manually** or **Let the agent review**. Agent review needs
+3. During a scan, the page shows the current stage, elapsed time, and record counts when available. **Show details** lists recent stages. Choose **Start manual review** or **Let the agent review** when the scan finishes. Agent review needs
    the Codex CLI signed in with ChatGPT. It sends candidate pairs and their
    choices to Codex in batches and saves validated decisions as each batch
    completes. **Pause after this batch** preserves completed decisions.
-4. Open **Needs your decision** for uncertain matches or **All disputes** to
+4. The **Manual review** card tracks saved dispute selections and offers **Continue review**. Open **Needs your decision** for uncertain matches or **All disputes** to
    browse every dispute group. Related candidates appear together, including
    groups of three or more. Check every question to keep and click
    **Save selection**. Unchecked questions are proposed for archive in a

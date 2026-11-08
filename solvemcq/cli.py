@@ -11,14 +11,14 @@ from .input import load_questions
 from .pipeline import MODEL, embedder, find_candidates, index_questions, split_exact
 
 
-def run(args, *, embedding=None):
+def run(args, *, embedding=None, progress=None):
     if args.output.exists():
         raise ValueError("Output directory already exists. Choose a new output path.")
     if min(args.top_k, args.batch_size) < 1 or not -1 <= args.threshold <= 1:
         raise ValueError("Expected positive batch size and top-k, and a threshold between -1 and 1")
     batch_id, questions = load_questions(args.input, args.subject)
     retained, duplicates = split_exact(questions)
-    collection = f"solvemcq_bge_m3_v1_{batch_id}"
+    collection = f"solvemcq_bge_m3_v2_{batch_id}"
     dimension, encode = embedding if embedding is not None else embedder(args.device)
     client = (
         QdrantClient(url=args.qdrant_url, api_key=os.getenv("QDRANT_API_KEY"))
@@ -26,12 +26,21 @@ def run(args, *, embedding=None):
     )
     bank_name = getattr(args, "bank", None)
     bank_questions = {}
+    def stage(message):
+        if progress is None:
+            return None
+        progress(message)
+        return lambda done, total: progress(message, done, total)
+
     try:
-        index_questions(client, collection, retained, dimension, encode, args.batch_size)
-        pairs = find_candidates(client, collection, retained, args.top_k, args.threshold)
+        index_questions(client, collection, retained, dimension, encode, args.batch_size,
+                        progress=stage("Indexing uploaded questions"))
+        pairs = find_candidates(client, collection, retained, args.top_k, args.threshold,
+                                progress=stage("Checking matches within the upload"))
         if bank_name:
             cross_pairs, bank_questions, missing_subjects, known_rows = compare_bank(
                 client, collection, bank_name, retained, args.top_k, args.threshold,
+                progress=stage("Checking matches against the bank"),
             )
             pairs.extend(cross_pairs)
             pairs.sort(key=lambda pair: (-pair["question_score"], pair["question_ids"]))
@@ -67,6 +76,7 @@ def run(args, *, embedding=None):
                 item.id: {
                     "input_row": item.row,
                     "subject": item.subject,
+                    "language": item.language,
                     "question": item.text,
                     "answer": item.answer,
                 }

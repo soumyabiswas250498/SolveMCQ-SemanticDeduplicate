@@ -19,6 +19,7 @@ class CandidateQuestion(BaseModel):
     subject: str
     question: str
     answer: str
+    language: str | None = None
     mongo_id: str | None = None
     mongo_id_type: Literal["ObjectId", "str"] | None = None
 
@@ -72,6 +73,9 @@ class ReviewJob:
         report_data = self.report.model_dump(
             mode="json", exclude_none=self.report.schema_version == 1,
         )
+        for item in report_data["questions"].values():
+            if item.get("language") is None:
+                item.pop("language", None)
         if self.report.existing_ids is None:
             report_data.pop("existing_ids", None)
         report_json = stable_json(report_data)
@@ -189,15 +193,18 @@ class ReviewJob:
             }
             if status in ("duplicate", "distinct"):
                 cards[status]["sources"] = metrics[f"{status}_sources"]
+        open_groups = Counter(group["status"] for group in self.groups(decisions, selections).values())
         result = {
             "job_id": self.job_id,
             "batch_id": self.report.batch_id,
             "candidate_pairs": total,
             "cards": cards,
-            "open_disputes": sum(
-                group["status"] in ("pending", "needs_review")
-                for group in self.groups(decisions, selections).values()
-            ),
+            "open_disputes": open_groups["pending"] + open_groups["needs_review"],
+            "manual_review": {
+                "completed": len(selections),
+                "awaiting": open_groups["pending"] + open_groups["needs_review"],
+                "deferred": open_groups["needs_review"],
+            },
             "agent_resolved_pairs": metrics["agent_resolved_pairs"],
             "pending": total - sum(counts.values()) - len(covered),
             "duplicates": counts["duplicate"],

@@ -26,6 +26,8 @@ class PipelineTest(unittest.TestCase):
         }
         conflict = {**paraphrase, "answer": "London"}
         different_subject = {**paraphrase, "subjectId": "geography"}
+        first["language"] = repeat["language"] = paraphrase["language"] = conflict["language"] = "bn"
+        translation = {**paraphrase, "language": "en"}
 
         def encode(texts, **kwargs):
             self.assertNotIn("Preserve the original record.", texts)
@@ -36,7 +38,7 @@ class PipelineTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             input_path = directory / "input.json"
-            input_path.write_text(json.dumps([first, repeat, paraphrase, conflict, different_subject]))
+            input_path.write_text(json.dumps([first, repeat, paraphrase, conflict, different_subject, translation]))
             args = Namespace(
                 input=input_path, output=directory / "output", index_path=directory / "index",
                 subject=None, qdrant_url=None, device="cpu", batch_size=2, top_k=12, threshold=0.7,
@@ -47,7 +49,7 @@ class PipelineTest(unittest.TestCase):
             def read(name):
                 return json.loads((args.output / name).read_text())
 
-            self.assertEqual(read("retained.json"), [first, paraphrase, conflict, different_subject])
+            self.assertEqual(read("retained.json"), [first, paraphrase, conflict, different_subject, translation])
             self.assertEqual(read("exact_duplicates.json")[0]["input_row"], 2)
             self.assertEqual(read("summary.json")["questions_flagged_for_review"], 3)
             review = read("review_candidates.json")

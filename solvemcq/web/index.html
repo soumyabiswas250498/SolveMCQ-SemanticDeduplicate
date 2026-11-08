@@ -29,7 +29,7 @@ button[aria-pressed="true"]{background:#e7effd;border-color:#8ca8d2}
 .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));grid-auto-rows:1fr;gap:8px;margin:10px 0}
 .stat{padding:9px 11px;border-radius:8px;background:#edf2f8;font-size:13px;line-height:1.35;color:var(--muted)}
 .stat h3{margin:0 0 3px;font-size:14px;color:var(--ink)}.stat strong{display:block;font-size:19px;color:var(--ink)}
-.stat p{margin-top:3px}.review-help{font-size:13px;margin:6px 0;color:var(--muted)}
+.stat p{margin-top:3px}.stat progress{margin:6px 0}.stat button{margin-top:6px}.review-help{font-size:13px;margin:6px 0;color:var(--muted)}
 progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--blue)}.answer{color:var(--green);background:var(--pale);border-radius:8px;padding:8px 10px;margin-top:12px;font-weight:650}.question ol{padding-left:23px;margin-bottom:4px}
 .question p{font-size:20px;line-height:1.45;font-weight:650}.result{margin-top:14px} [hidden]{display:none!important}
 .pair{grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr))}
@@ -54,6 +54,13 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
   <p class="sub">Clean up your existing bank or check new questions before adding them.</p>
   <ol class="steps" aria-label="Workflow"><li id="step-files">1. Choose files</li><li id="step-review">2. Review matches</li><li id="step-export">3. Download results</li></ol>
   <p id="notice" class="notice" role="status" aria-live="polite" hidden></p>
+
+  <section id="scan-progress" class="panel" aria-labelledby="scan-stage" hidden>
+    <h2 id="scan-stage" role="status"></h2>
+    <p id="scan-detail" class="sub"></p>
+    <progress id="scan-meter" aria-label="Scan stage progress"></progress>
+    <details class="review-help"><summary>Show details</summary><ul id="scan-events"></ul></details>
+  </section>
 
   <section id="setup" class="panel" aria-labelledby="setup-title">
     <h2 id="setup-title">What would you like to do?</h2>
@@ -197,7 +204,28 @@ function render() {
   $("review").hidden = $("results").hidden = !ready;
   document.querySelectorAll(".steps li").forEach(item => item.removeAttribute("aria-current"));
   $(ready ? (state.export && !state.export_blocker ? "step-export" : "step-review") : "step-files").setAttribute("aria-current", "step");
-  notice(state.message || "", state.status === "error");
+  const scanning = state.status === "running" && !!state.scan_progress;
+  notice(scanning ? "" : state.message || "", state.status === "error");
+  const scanFailed = state.status === "error" && !!state.scan_progress;
+  $("scan-progress").hidden = !scanning && !scanFailed;
+  if (scanning || scanFailed) {
+    const {stage, done, total} = state.scan_progress;
+    const heading = scanFailed ? `Stopped at ${stage.toLowerCase()}` : stage;
+    if ($("scan-stage").textContent !== heading) $("scan-stage").textContent = heading;
+    const elapsed = `Elapsed ${duration(state.scan_elapsed ?? 0)}`;
+    $("scan-detail").textContent = scanFailed ? "" :
+      total ? `${done ?? 0} of ${total} questions processed · ${elapsed}` : elapsed;
+    const meter = $("scan-meter");
+    meter.hidden = scanFailed;
+    if (total) {
+      meter.max = total;
+      meter.value = done ?? 0;
+    } else {
+      meter.removeAttribute("value");
+    }
+    $("scan-events").replaceChildren(...state.scan_events.map(event => node("li",
+      `${new Date(event.time * 1000).toLocaleTimeString()} · ${event.stage}`)));
+  }
   if (!ready) return;
   const r = state.review;
   const baseline = state.mode === "baseline";
@@ -207,7 +235,7 @@ function render() {
     : "Use the _import_ready.json file inside the ZIP to import ready questions.");
   $("original-bank-label").hidden = !baseline || !!state.bank_snapshot_full;
   $("review-list").hidden = $("review-workspace").hidden = !manual || !!state.agent_running;
-  $("manual").hidden = !!state.agent_running;
+  $("manual").hidden = !!state.agent_running || !!r.manual_review.awaiting;
   $("agent").hidden = !!state.agent_running || r.pending === 0;
   $("pause").hidden = !state.agent_running;
   $("export").disabled = !!state.export_blocker;
@@ -221,6 +249,30 @@ function render() {
   ].map(([status, label]) => {
     const item = node("div", undefined, "stat");
     const {disputes, questions, pairs, sources} = r.cards[status];
+    if (status === "needs_review") {
+      const {completed, awaiting, deferred} = r.manual_review;
+      const total = completed + awaiting;
+      item.append(node("h3", "Manual review"));
+      if (state.agent_running) {
+        item.append(node("strong", `${deferred} ${deferred === 1 ? "dispute" : "disputes"} ready for you`),
+          node("p", "AI review in progress"));
+      } else if (!awaiting && state.export_conflicts?.length) {
+        item.append(node("strong", "Conflicting decisions to review"),
+          button("See conflicts", () => $("results").scrollIntoView({block: "start"})));
+      } else if (total) {
+        item.append(node("strong", `${completed} of ${total} disputes completed`));
+        const progress = node("progress");
+        progress.max = total;
+        progress.value = completed;
+        progress.setAttribute("aria-label", "Manual dispute review progress");
+        item.append(progress);
+        if (awaiting) item.append(button(completed ? "Continue review" : "Start manual review", openManualReview));
+        else item.append(node("p", "Manual review complete"));
+      } else {
+        item.append(node("strong", "No manual review needed"));
+      }
+      return item;
+    }
     item.append(
       node("h3", label),
       node("strong", `${disputes} ${disputes === 1 ? "dispute" : "disputes"}`)
@@ -349,7 +401,10 @@ async function showDispute(groupId = activeGroup, conflictPair) {
   }
 
   const group = await api("disputes?" + new URLSearchParams({...params, group: activeGroup}));
-  $("pair-status").textContent = `Dispute ${index + 1} of ${visibleGroups.length} · ${group.questions.length} questions`;
+  const {completed, awaiting, deferred} = state.review.manual_review;
+  const position = queue === "all" ? index + 1 : completed + index + 1 + (queue === "pending" ? deferred : 0);
+  const total = queue === "all" ? visibleGroups.length : completed + awaiting;
+  $("pair-status").textContent = `Dispute ${position} of ${total} · ${group.questions.length} questions`;
   $("pair-area").hidden = false;
   $("reason").value = group.reason;
   $("reason-details").open = !!group.reason;
@@ -399,6 +454,7 @@ async function showDispute(groupId = activeGroup, conflictPair) {
       job: state.id, group: group.id, members: group.members, keep: [...keep], reason: $("reason").value
     });
     render();
+    if (queue !== "all" && !state.review.needs_review && state.review.pending) queue = "pending";
     await showDispute(visibleGroups[index + 1]?.id ?? group.id);
   }), true), selection);
 }
@@ -420,6 +476,7 @@ async function attempt(action) {
   } finally {
     busy = false;
     for (const control of document.querySelectorAll("button")) control.disabled = false;
+    $("export").disabled = !!state.export_blocker;
   }
 }
 
@@ -466,13 +523,17 @@ function selectMode(value) {
 for (const choice of ["incoming", "baseline", "resume"]) {
   $("mode-" + choice).onclick = () => selectMode(choice);
 }
-$("manual").onclick = () => attempt(async () => {
-  manual = true;
-  queue = state.review.needs_review ? "needs_review" : state.review.pending ? "pending" : "all";
-  activeGroup = null;
-  render();
-  await showDispute();
-});
+function openManualReview() {
+  return attempt(async () => {
+    manual = true;
+    queue = state.review.needs_review ? "needs_review" : state.review.pending ? "pending" : "all";
+    activeGroup = null;
+    render();
+    await showDispute();
+    $("review-workspace").scrollIntoView({block: "nearest"});
+  });
+}
+$("manual").onclick = openManualReview;
 $("agent").onclick = () => attempt(async () => {
   manual = true;
   queue = "needs_review";

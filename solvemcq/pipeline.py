@@ -18,7 +18,7 @@ def split_exact(questions):
     duplicates = []
     for question in questions:
         signature = (
-            question.subject, question.text, question.answer, question.choices, question.correct_key,
+            question.subject, question.language, question.text, question.answer, question.choices, question.correct_key,
         )
         if signature in unique:
             duplicates.append({
@@ -33,7 +33,7 @@ def split_exact(questions):
     return list(unique.values()), duplicates
 
 
-def index_questions(client: QdrantClient, collection, questions, dimension, encode, batch_size, payload_for=None):
+def index_questions(client: QdrantClient, collection, questions, dimension, encode, batch_size, payload_for=None, progress=None):
     if not client.collection_exists(collection):
         client.create_collection(
             collection_name=collection,
@@ -43,6 +43,7 @@ def index_questions(client: QdrantClient, collection, questions, dimension, enco
             },
         )
 
+    checked = 0
     pending = iter(questions)
     while batch := list(islice(pending, batch_size)):
         stored = client.retrieve(
@@ -54,7 +55,10 @@ def index_questions(client: QdrantClient, collection, questions, dimension, enco
         else:
             stored_payloads = {point.id: point.payload for point in stored}
             missing = [item for item in batch if stored_payloads.get(item.id) != payload_for(item)]
+        checked += len(batch)
         if not missing:
+            if progress:
+                progress(checked, len(questions))
             continue
         vectors = encode(
             [item.text for item in missing] + [item.answer for item in missing],
@@ -66,16 +70,18 @@ def index_questions(client: QdrantClient, collection, questions, dimension, enco
             models.PointStruct(
                 id=item.id,
                 vector={"question": vectors[index], "answer": vectors[index + len(missing)]},
-                payload=payload_for(item) if payload_for else {"subject": item.subject},
+                payload=payload_for(item) if payload_for else {"subject": item.subject, "language": item.language},
             )
             for index, item in enumerate(missing)
         ], wait=True)
+        if progress:
+            progress(checked, len(questions))
 
 
-def find_candidates(client, collection, questions, top_k, threshold):
+def find_candidates(client, collection, questions, top_k, threshold, progress=None):
     by_id = {item.id: item for item in questions}
     pairs = {}
-    for question in questions:
+    for checked, question in enumerate(questions, 1):
         vector = client.retrieve(
             collection, [question.id], with_payload=False, with_vectors=["answer"]
         )[0].vector["answer"]
@@ -86,16 +92,22 @@ def find_candidates(client, collection, questions, top_k, threshold):
                 continue
             other = by_id[hit.id]
             pairs[pair] = candidate_pair(pair, question.answer, other.answer, vector, hit)
+        if progress:
+            progress(checked, len(questions))
     return sorted(pairs.values(), key=lambda pair: (-pair["question_score"], pair["question_ids"]))
 
 
 def query_neighbors(client, collection, question, query, top_k, threshold, with_payload=False):
+    conditions = [models.FieldCondition(key="subject", match=models.MatchValue(value=question.subject))]
+    if question.language:
+        conditions.append(models.Filter(should=[
+            models.FieldCondition(key="language", match=models.MatchValue(value=question.language)),
+            models.IsEmptyCondition(is_empty=models.PayloadField(key="language")),
+        ]))
     return client.query_points(
         collection, query=query, using="question",
         query_filter=models.Filter(
-            must=[models.FieldCondition(
-                key="subject", match=models.MatchValue(value=question.subject)
-            )],
+            must=conditions,
             must_not=[models.HasIdCondition(has_id=[question.id])],
         ),
         limit=top_k, score_threshold=threshold, with_payload=with_payload,

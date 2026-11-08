@@ -35,6 +35,7 @@ class FinalizeTest(unittest.TestCase):
                 self.ids[row]: {
                     "input_row": row, "subject": "history",
                     "question": by_row[row].text, "answer": by_row[row].answer,
+                    "language": by_row[row].language,
                 }
                 for row in sorted({row for pair in pairs for row in pair})
             },
@@ -97,6 +98,19 @@ class FinalizeTest(unittest.TestCase):
                 summary = self.export()
                 self.assertEqual(summary["semantic_duplicates_removed"], 0)
                 self.assertEqual(summary["blocked_duplicate_groups"], 1)
+
+    def test_untagged_record_cannot_merge_two_known_language_versions(self):
+        self.records[0]["language"] = "bn"
+        self.records[2]["language"] = "en"
+        self.input.write_text(json.dumps(self.records), encoding="utf-8")
+        job = self.job([(1, 2), (2, 3)])
+        self.save(job, 1, "duplicate", 2)
+        self.save(job, 2, "duplicate", 2)
+        summary = self.export()
+        self.assertFalse(summary["complete"])
+        self.assertEqual(summary["semantic_duplicates_removed"], 0)
+        self.assertIn("This group contains different language versions",
+                      self.read("unresolved.json")["blocked_duplicate_groups"][0]["reasons"])
 
     def test_rejects_wrong_input_or_missing_database(self):
         self.job([(1, 2)])

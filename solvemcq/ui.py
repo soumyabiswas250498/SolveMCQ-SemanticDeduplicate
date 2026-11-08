@@ -87,6 +87,8 @@ class LocalWorkflow:
     def snapshot(self):
         with self.lock:
             result = {**self.state}
+            if result["status"] == "running" and result.get("scan_progress"):
+                result["scan_elapsed"] = max(0, time.time() - result["scan_started"])
             if result["status"] == "ready":
                 job = self.job()
                 result["review"] = job.summary()
@@ -130,11 +132,25 @@ class LocalWorkflow:
             if bank:
                 (path / "bank.json").write_bytes(bank.encode("utf-8"))
             self.originals.clear()
-            self.update()
+            self.state["scan_started"] = time.time()
+            self.scan_stage("Reading your files")
             use_mongo = bool(data.get("use_mongo")) or (mode != "incoming" and not bank)
             threading.Thread(target=self.process, args=(path, subject.strip(), database, use_mongo),
                              daemon=True).start()
             return self.snapshot()
+
+    def scan_stage(self, stage, done=None, total=None):
+        with self.lock:
+            now = time.time()
+            previous = self.state.get("scan_progress", {})
+            changed = previous.get("stage") != stage
+            if not changed and done != total and now - previous.get("updated", 0) < 0.5:
+                return
+            events = self.state.get("scan_events", [])
+            if changed:
+                events = [*events[-19:], {"time": now, "stage": stage}]
+            self.update(scan_progress={"stage": stage, "done": done, "total": total, "updated": now},
+                        scan_events=events)
 
     def process(self, path, subject, database, use_mongo):
         try:
@@ -148,13 +164,13 @@ class LocalWorkflow:
                 from pymongo import MongoClient
                 from pymongo.errors import PyMongoError
 
-                self.update(message="Reading the existing MongoDB bank…")
+                self.scan_stage("Reading the existing MongoDB bank")
                 try:
                     uri = os.getenv("SOLVEMCQ_MONGO_URI", "mongodb://127.0.0.1:27018")
                     with MongoClient(uri, serverSelectionTimeoutMS=5000) as mongo:
                         fields = None if self.state["mode"] == "baseline" else {
                             "_id": 1, "subjectId": 1, "subject": 1, "questionText": 1, "question": 1,
-                            "options": 1, "correctOptionKey": 1, "correctAnswer": 1, "answer": 1,
+                            "options": 1, "language": 1, "correctOptionKey": 1, "correctAnswer": 1, "answer": 1,
                             "operationalStatus": 1, "deletedAt": 1,
                         }
                         docs = list(mongo[database].questions.find({}, fields))
@@ -195,29 +211,35 @@ class LocalWorkflow:
                 if unknown:
                     raise ValueError("These subjects are missing from the bank: " + ", ".join(unknown))
 
-            self.update(message="Loading the matching model. The first run may take several minutes…")
             if self.embedding is None:
+                self.scan_stage("Preparing the matching model")
                 self.embedding = embedder(self.device)
+                self.scan_stage("Matching model ready")
+            else:
+                self.scan_stage("Reusing the loaded matching model")
             index_path = self.root / "qdrant"
             qdrant_url = os.getenv("SOLVEMCQ_QDRANT_URL", "http://127.0.0.1:6333") if live_bank else None
             if bank_name:
-                self.update(message="Indexing the existing question bank…")
+                self.scan_stage("Indexing the question bank", 0, len(bank_questions))
                 client = QdrantClient(url=qdrant_url) if qdrant_url else QdrantClient(path=str(index_path))
                 with closing(client):
-                    sync_bank(client, bank_name, bank_questions, metadata, *self.embedding, 16)
+                    sync_bank(client, bank_name, bank_questions, metadata, *self.embedding, 16,
+                              progress=lambda done, total: self.scan_stage("Indexing the question bank", done, total))
                     if is_baseline:
-                        data = baseline_report(client, bank_name, bank_questions, metadata)
+                        self.scan_stage("Checking bank questions for matches", 0, len(bank_questions))
+                        data = baseline_report(client, bank_name, bank_questions, metadata,
+                                               progress=lambda done, total: self.scan_stage(
+                                                   "Checking bank questions for matches", done, total))
                         write_results(path / "scan", {"review_candidates.json": data})
             if is_baseline:
                 ReviewJob(*self.review_paths())
                 self.update(status="ready", message="", subject=None, bank_snapshot_full=True,
                             scan={"input_questions": len(bank_questions)})
                 return
-            self.update(message="Finding similar questions…")
             summary = run(Namespace(
                 input=path / "incoming.json", output=path / "scan", subject=subject, index_path=index_path,
                 qdrant_url=qdrant_url, device=self.device, bank=bank_name, batch_size=16, top_k=12, threshold=0.70,
-            ), embedding=self.embedding)
+            ), embedding=self.embedding, progress=self.scan_stage)
             ReviewJob(path / "scan/review_candidates.json", path / "reviews.sqlite3")
             self.update(status="ready", message="", subject=subject, scan=summary)
         except (ValueError, OSError, ImportError) as error:
@@ -329,8 +351,13 @@ class LocalWorkflow:
             self.require_ready(job_id)
             if self.state.get("agent_running"):
                 raise ValueError("Pause agent review before saving a dispute.")
-            self.job().save_group(data.get("group"), data.get("members"), data.get("keep"), data.get("reason", ""))
-            self.update(export=None)
+            job = self.job()
+            members, keep = data.get("members"), data.get("keep")
+            job.save_group(data.get("group"), members, keep, data.get("reason", ""))
+            reviewed = [key for key in members
+                        if self.state["mode"] == "baseline" or job.report.questions[key].mongo_id is None]
+            kept = len(set(reviewed).intersection(keep))
+            self.update(export=None, message=f"Decision saved · {kept} kept · {len(reviewed) - kept} dropped.")
             return self.snapshot()
 
     def start_agent(self, job_id):

@@ -31,6 +31,13 @@ class Question:
     correct_key: str | None
     record: dict
 
+    @property
+    def language(self):
+        value = self.record.get("language")
+        if not isinstance(value, str):
+            return None
+        return value.strip().lower().replace("_", "-").split("-")[0] or None
+
 
 def load_questions(path: Path, default_subject: str | None):
     def reject_constant(value):

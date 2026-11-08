@@ -25,7 +25,7 @@ def read_bank(collection):
     from pymongo import ASCENDING
 
     projection = dict.fromkeys((
-        "_id", "subjectId", "subject", "questionText", "question", "options",
+        "_id", "subjectId", "subject", "language", "questionText", "question", "options",
         "correctOptionKey", "correctAnswer", "answer",
     ), 1)
     query = {"deletedAt": None, "operationalStatus": {"$nin": list(EXCLUDED_STATUSES)}}
@@ -61,18 +61,18 @@ def read_bank_documents(documents, namespace):
     return questions, metadata
 
 
-def sync_bank(client, name, questions, metadata, dimension, encode, batch_size, allow_empty=False):
+def sync_bank(client, name, questions, metadata, dimension, encode, batch_size, allow_empty=False, progress=None):
     if not questions and not allow_empty:
         raise ValueError("MongoDB returned zero eligible questions. Verify the source or use --allow-empty.")
     collection = bank_collection(name)
 
     def payload(item):
         return {
-            "subject": item.subject, "question": item.text, "answer": item.answer,
+            "subject": item.subject, "language": item.language, "question": item.text, "answer": item.answer,
             **metadata[item.id],
         }
 
-    index_questions(client, collection, questions, dimension, encode, batch_size, payload)
+    index_questions(client, collection, questions, dimension, encode, batch_size, payload, progress=progress)
     live = {question.id for question in questions}
     offset = None
     stale = []
@@ -90,7 +90,7 @@ def sync_bank(client, name, questions, metadata, dimension, encode, batch_size, 
     return {"bank": name, "indexed_questions": len(live), "removed_stale_points": len(stale)}
 
 
-def compare_bank(client, batch_collection, name, questions, top_k, threshold):
+def compare_bank(client, batch_collection, name, questions, top_k, threshold, progress=None):
     collection = bank_collection(name)
     if not client.collection_exists(collection):
         raise ValueError(f"Bank {name!r} is missing. Run solvemcq-bank first.")
@@ -105,7 +105,7 @@ def compare_bank(client, batch_collection, name, questions, top_k, threshold):
     known_rows = find_existing_rows(client, collection, questions)
     pairs = []
     bank_questions = {}
-    for question in questions:
+    for checked, question in enumerate(questions, 1):
         vectors = client.retrieve(
             batch_collection, [question.id], with_payload=False, with_vectors=True,
         )[0].vector
@@ -118,6 +118,8 @@ def compare_bank(client, batch_collection, name, questions, top_k, threshold):
             pairs.append(candidate_pair(
                 (question.id, hit.id), question.answer, item["answer"], vectors["answer"], hit,
             ))
+        if progress:
+            progress(checked, len(questions))
     return pairs, bank_questions, missing_subjects, known_rows
 
 
@@ -150,15 +152,15 @@ def find_existing_rows(client, collection, questions):
     return known
 
 
-def baseline_report(client, name, questions, metadata):
-    pairs = find_candidates(client, bank_collection(name), questions, 12, 0.70)
+def baseline_report(client, name, questions, metadata, progress=None):
+    pairs = find_candidates(client, bank_collection(name), questions, 12, 0.70, progress=progress)
     flagged = {question_id for pair in pairs for question_id in pair["question_ids"]}
     return {
         "schema_version": 2,
         "batch_id": f"bank:{name}",
         "questions": {
             item.id: {
-                "input_row": None, "subject": item.subject, "question": item.text,
+                "input_row": None, "subject": item.subject, "language": item.language, "question": item.text,
                 "answer": item.answer, **metadata[item.id],
             }
             for item in questions if item.id in flagged

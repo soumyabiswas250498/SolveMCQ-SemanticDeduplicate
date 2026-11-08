@@ -171,6 +171,9 @@ def reconcile(job, describe, protected_ids=()):
         pair_ids = sorted({pair_id for item in component for pair_id in duplicate_pairs[item]})
         keepers = [item for item in component if not keep_targets[item]]
         reasons = []
+        languages = {job.report.questions[item].language for item in component} - {None}
+        if len(languages) > 1:
+            reasons.append("This group contains different language versions")
         existing_members = component.intersection(protected_ids)
         if existing_members and (len(existing_members) != 1 or keepers != list(existing_members)):
             reasons.append("Group does not resolve to exactly one existing MongoDB keeper")
