@@ -152,7 +152,7 @@ class ReviewJob:
         return decisions, selections, metrics
 
     def summary(self):
-        decisions, selections = self.review_state()
+        decisions, selections, metrics = self.export_review_state()
         covered = {pair_id for item in selections.values() for pair_id in item["pairs"]}
         counts = Counter(decision.verdict for pair_id, decision in decisions.items() if pair_id not in covered)
         total = len(self.report.pairs)
@@ -160,6 +160,7 @@ class ReviewJob:
             "job_id": self.job_id,
             "batch_id": self.report.batch_id,
             "candidate_pairs": total,
+            "agent_resolved_pairs": metrics["agent_resolved_pairs"],
             "pending": total - sum(counts.values()) - len(covered),
             "duplicates": counts["duplicate"],
             "distinct": counts["distinct"],

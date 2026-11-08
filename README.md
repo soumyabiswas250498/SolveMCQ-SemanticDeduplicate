@@ -214,9 +214,13 @@ The app saves the current job under `.solvemcq/browser`. Keep one running app
 per data directory. Archive proposals and import-ready files are exports for
 use in your normal database workflow.
 
-**Download unique.json** and **Download drop.json** split the original records
-into two JSON arrays. Both preserve the full record fields. Unresolved records
-stay in the retained file until reviewed. When reopening an older baseline that
-saved a partial MongoDB snapshot, select the original bank export once to
-restore the full fields. The incoming import-ready export continues to hold
-unresolved records back.
+Browser downloads use the original filename stem, such as `test_unique.json`.
+For incoming batches, **Download import file** contains the same records as
+the unique export. Dropped records are exported separately, and held records
+appear in **Still to review**. **Download all results (ZIP)** includes the
+original input, every report for the selected workflow, and a summary that
+describes each file.
+
+Existing-bank audits preserve their retained/dropped split and include the
+archive proposals. When reopening an older baseline that saved a partial
+MongoDB snapshot, select the original bank export to restore the full fields.

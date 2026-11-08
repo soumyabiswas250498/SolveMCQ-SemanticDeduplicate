@@ -13,7 +13,8 @@ from argparse import Namespace
 from contextlib import closing
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from qdrant_client import QdrantClient
 
@@ -27,11 +28,24 @@ from .review import Decision, ReviewJob
 
 
 MAX_UPLOAD = 32 * 1024 * 1024
-DOWNLOADS = {
-    "unique.json", "drop.json",
-    "import_ready.json", "duplicates.json", "unresolved.json", "summary.json", "already_in_bank.json",
-    "proposed_archives.json",
+EXPORT_DESCRIPTIONS = {
+    "unique.json": "Full incoming records ready for import after duplicate removal and review holds.",
+    "drop.json": "Full original records excluded from the retained set. See the audit files for decisions.",
+    "import_ready.json": "Import file. Contains the same full records as the incoming unique export.",
+    "duplicates.json": "Removed duplicates with original row numbers, keeper IDs or rows, and supporting pair IDs where available.",
+    "unresolved.json": "Pending and deferred candidate pairs, blocked groups, and, for incoming batches, full held records with their original row numbers.",
+    "already_in_bank.json": "Incoming records whose IDs already exist in the bank, with their original row numbers and bank IDs.",
+    "proposed_archives.json": "Proposed archive and keeper IDs for the existing bank, with supporting pair IDs.",
+    "summary.json": "Question counts, review verdict totals, completion status, and this file guide.",
 }
+
+
+def upload_name(name, fallback):
+    if not isinstance(name, str):
+        return fallback
+    name = name.replace("\\", "/").rsplit("/", 1)[-1]
+    name = "".join(char for char in name if char.isprintable() and char != ":").strip()
+    return name if name and Path(name).stem.strip(". ") else fallback
 
 
 class LocalWorkflow:
@@ -104,13 +118,15 @@ class LocalWorkflow:
             self.state = {
                 "id": uuid.uuid4().hex, "status": "running", "message": "Reading your files…",
                 "mode": "incoming" if mode == "incoming" else "baseline", "resume": mode == "resume",
+                "source_name": upload_name(data.get("source_name"), "incoming.json"),
+                "bank_name": upload_name(data.get("bank_name"), "bank.json"),
             }
             path = self.path()
             path.mkdir()
             if source:
-                (path / "incoming.json").write_text(source.removeprefix("\ufeff"), encoding="utf-8")
+                (path / "incoming.json").write_bytes(source.encode("utf-8"))
             if bank:
-                (path / "bank.json").write_text(bank.removeprefix("\ufeff"), encoding="utf-8")
+                (path / "bank.json").write_bytes(bank.encode("utf-8"))
             self.originals.clear()
             self.update()
             use_mongo = bool(data.get("use_mongo")) or (mode != "incoming" and not bank)
@@ -145,7 +161,7 @@ class LocalWorkflow:
                 bank_path.write_text(json_util.dumps(docs), encoding="utf-8")
             bank_name = None
             if bank_path.exists():
-                docs = json_util.loads(bank_path.read_text(encoding="utf-8"))
+                docs = json_util.loads(bank_path.read_text(encoding="utf-8-sig"))
                 if not isinstance(docs, list):
                     raise ValueError("The question bank must be a MongoDB Extended JSON array.")
                 bank_questions, metadata = read_bank_documents(docs, "local-file-bank")
@@ -221,7 +237,7 @@ class LocalWorkflow:
             items = load_questions(incoming, self.state["subject"])[1] if incoming.exists() else []
             self.originals["incoming"] = {item.row: item.record.get("options", []) for item in items}
             bank = path / "bank.json"
-            docs = json_util.loads(bank.read_text(encoding="utf-8")) if bank.exists() else []
+            docs = json_util.loads(bank.read_text(encoding="utf-8-sig")) if bank.exists() else []
             self.originals["bank"] = {
                 (str(item["_id"]), type(item["_id"]).__name__): item.get("options", [])
                 for item in docs if "_id" in item
@@ -311,7 +327,7 @@ class LocalWorkflow:
             while not self.pause_agent.is_set():
                 candidates = job.batch(15, "pending")["candidates"]
                 if not candidates:
-                    message = "Agent review finished. Open Needs your decision for any remaining pairs."
+                    message = "Agent review finished."
                     break
                 with self.lock:
                     self.add_choices(path, candidates)
@@ -372,25 +388,26 @@ class LocalWorkflow:
             self.update(export=None)
             return self.snapshot()
 
-    def export(self, job_id, original_bank=None):
+    def export(self, job_id, original_bank=None, original_bank_name=None):
         with self.lock:
             path = self.require_ready(job_id)
             if self.state.get("agent_running"):
                 raise ValueError("Pause agent review before preparing results.")
             name = f"export-{uuid.uuid4().hex}"
             if self.state.get("mode") == "baseline":
-                bank_source = (path / "bank.json").read_text(encoding="utf-8")
+                bank_source = (path / "bank.json").read_text(encoding="utf-8-sig")
                 if not self.state.get("bank_snapshot_full"):
                     if not isinstance(original_bank, str) or not original_bank:
                         raise ValueError("Choose the original bank JSON to preserve all fields in these downloads.")
-                    self.validate_original_bank(bank_source, original_bank)
+                    self.validate_original_bank(bank_source, original_bank.removeprefix("\ufeff"))
                     bank_source = original_bank.removeprefix("\ufeff")
                 summary = export_baseline(self.job(), path / name, bank_source)
                 if not self.state.get("bank_snapshot_full"):
                     recovered = path / "bank-recovered.json"
-                    recovered.write_text(bank_source, encoding="utf-8")
+                    recovered.write_bytes(original_bank.encode("utf-8"))
                     recovered.replace(path / "bank.json")
-                    self.update(bank_snapshot_full=True)
+                    self.update(bank_snapshot_full=True,
+                                bank_name=upload_name(original_bank_name, "bank.json"))
             else:
                 report, db = self.review_paths()
                 summary = finalize(
@@ -401,8 +418,36 @@ class LocalWorkflow:
             export["conflicts"] = unresolved["blocked_duplicate_groups"]
             if self.state.get("mode") == "baseline":
                 export["preview"] = json.loads((path / name / "proposed_archives.json").read_text(encoding="utf-8"))
+            self.package_export(path, export)
             self.update(export=export)
             return self.snapshot()
+
+    def package_export(self, path, export):
+        baseline = self.state.get("mode") == "baseline"
+        original = "bank.json" if baseline else "incoming.json"
+        original_name = self.state.get("bank_name" if baseline else "source_name", original)
+        stem = Path(original_name).stem
+        directory = path / export["directory"]
+        descriptions = dict(EXPORT_DESCRIPTIONS)
+        if baseline:
+            descriptions["unique.json"] = (
+                "Full retained bank records, including records with unresolved decisions. "
+                "Use the archive proposals to review changes to the existing bank."
+            )
+        files = {key: f"{stem}_{key}" for key in descriptions if (directory / key).is_file()}
+        summary = export["summary"]
+        summary["files"] = {
+            original_name: "Original incoming JSON as uploaded." if not baseline else "Original bank snapshot used for review.",
+            **{filename: descriptions[key] for key, filename in files.items()},
+        }
+        (directory / "summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+        )
+        with ZipFile(directory / "results.zip", "w", compression=ZIP_DEFLATED) as archive:
+            archive.write(path / original, original_name)
+            for key, filename in files.items():
+                archive.write(directory / key, filename)
+        export["files"] = {**files, "results.zip": f"{stem}_results.zip"}
 
     @staticmethod
     def validate_original_bank(snapshot, original):
@@ -420,12 +465,15 @@ class LocalWorkflow:
             raise ValueError("The original bank differs from the snapshot used for this review.")
 
     def download(self, job_id, filename):
+        return self.download_file(job_id, filename)[0]
+
+    def download_file(self, job_id, filename):
         with self.lock:
             path = self.require_ready(job_id)
             export = self.state.get("export")
-            if filename not in DOWNLOADS or not export:
-                raise ValueError("Generate the results first.")
-            return (path / export["directory"] / filename).read_bytes()
+            if not export or filename not in export.get("files", {}):
+                raise ValueError("Preview the results first to generate the download.")
+            return (path / export["directory"] / filename).read_bytes(), export["files"][filename]
 
 
 class LocalServer(ThreadingHTTPServer):
@@ -447,7 +495,7 @@ class LocalHandler(BaseHTTPRequestHandler):
                          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
                          "connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
         if filename:
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(filename, safe='')}")
         self.end_headers()
         self.wfile.write(content)
 
@@ -496,8 +544,9 @@ class LocalHandler(BaseHTTPRequestHandler):
                 self.send_json(200, workflow.dispute_groups(query.get("job"), group_id))
             elif path == "/api/download":
                 filename = query.get("file")
-                self.send_content(200, workflow.download(query.get("job"), filename),
-                                  "application/json; charset=utf-8", filename)
+                content, download_name = workflow.download_file(query.get("job"), filename)
+                mime = "application/zip" if filename == "results.zip" else "application/json; charset=utf-8"
+                self.send_content(200, content, mime, download_name)
             else:
                 self.send_json(404, {"error": "Page not found."})
             return
@@ -519,7 +568,7 @@ class LocalHandler(BaseHTTPRequestHandler):
         elif path == "/api/pause":
             result = workflow.stop_agent(data.get("job"))
         elif path == "/api/export":
-            result = workflow.export(data.get("job"), data.get("original_bank"))
+            result = workflow.export(data.get("job"), data.get("original_bank"), data.get("original_bank_name"))
         else:
             self.send_json(404, {"error": "Page not found."})
             return

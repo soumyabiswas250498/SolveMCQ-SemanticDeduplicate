@@ -1,3 +1,4 @@
+import io
 import json
 import tempfile
 import threading
@@ -6,6 +7,7 @@ import unittest
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from zipfile import ZipFile
 
 import numpy as np
 
@@ -49,7 +51,10 @@ class BrowserWorkflowTest(unittest.TestCase):
                         "questionText": "Existing question?", "correctOptionKey": "A",
                         "options": [{"key": "A", "text": "Here"}, {"key": "B", "text": "There"}],
                     }]
-                    state = call("/api/start", {"source": json.dumps(incoming), "bank": json.dumps(bank)})
+                    original = "\ufeff" + json.dumps(incoming, indent=2) + "\r\n"
+                    state = call("/api/start", {
+                        "source": original, "source_name": "ইতিহাস.json", "bank": json.dumps(bank),
+                    })
                     deadline = time.monotonic() + 5
                     while state["status"] == "running" and time.monotonic() < deadline:
                         time.sleep(0.05)
@@ -61,6 +66,20 @@ class BrowserWorkflowTest(unittest.TestCase):
                     self.assertEqual(len(pair["questions"]), 2)
                     existing = next(item for item in pair["questions"] if "mongo_id" in item)
                     self.assertEqual(existing["options"], bank[0]["options"])
+                    state = call("/api/export", {"job": job})
+                    summary = state["export"]["summary"]
+                    self.assertEqual((summary["retained_questions"], summary["held_questions"]), (0, 1))
+                    self.assertEqual(call(f"/api/download?job={job}&file=unique.json"), [])
+                    self.assertEqual(call(f"/api/download?job={job}&file=import_ready.json"), [])
+                    with urlopen(f"http://{server.host}/api/download?job={job}&file=results.zip") as response:
+                        self.assertEqual(response.headers.get_content_type(), "application/zip")
+                        self.assertEqual(response.headers.get_filename(), "ইতিহাস_results.zip")
+                        with ZipFile(io.BytesIO(response.read())) as archive:
+                            self.assertEqual(set(archive.namelist()), set(summary["files"]))
+                            self.assertEqual(len(archive.namelist()), 8)
+                            self.assertEqual(archive.read("ইতিহাস.json"), original.encode())
+                            unresolved = json.loads(archive.read("ইতিহাস_unresolved.json"))
+                            self.assertEqual([item["record"] for item in unresolved["held_questions"]], incoming[1:])
                     call("/api/decide", {"job": job, "pair_id": pair["pair_id"], "verdict": "distinct"})
                     self.assertEqual(LocalWorkflow(root).snapshot()["review"]["distinct"], 1)
                     state = call("/api/export", {"job": job})

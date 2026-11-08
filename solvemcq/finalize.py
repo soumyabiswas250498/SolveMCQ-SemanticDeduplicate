@@ -97,6 +97,13 @@ def finalize(input_path, report_path, db_path, output, subject, *, reviewed_only
         summary["already_in_bank_questions"] = len(existing_ids)
         summary["import_ready_questions"] = len(ready)
         summary["held_questions"] = len(unique) - len(ready)
+        if reviewed_only:
+            results["unique.json"] = ready
+            results["unresolved.json"]["held_questions"] = [
+                describe(item.id) for item in retained
+                if item.id in held and item.row not in drop_rows
+            ]
+            summary["retained_questions"] = len(ready)
     write_results(output, results)
     return summary
 

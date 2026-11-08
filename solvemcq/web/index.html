@@ -199,7 +199,9 @@ function render() {
   const r = state.review;
   const baseline = state.mode === "baseline";
   $("review-title").textContent = baseline ? "Review existing bank" : "Review new questions";
-  $("results-note").textContent = "Every original question goes into either unique.json or drop.json. Unresolved questions stay in unique.json until you decide.";
+  $("results-note").textContent = baseline
+    ? "The retained and dropped files split the original bank. Check Still to review for unresolved decisions."
+    : "Use Download import file for ready questions. Pending questions appear in Still to review.";
   $("original-bank-label").hidden = !baseline || !!state.bank_snapshot_full;
   $("review-list").hidden = $("review-workspace").hidden = !manual || !!state.agent_running;
   $("manual").hidden = !!state.agent_running;
@@ -219,8 +221,14 @@ function render() {
     return item;
   }));
   $("progress").max = r.candidate_pairs || 1;
-  $("progress").value = r.candidate_pairs ? r.candidate_pairs - r.pending : 1;
-  $("pair-progress").textContent = `${r.candidate_pairs - r.pending} of ${r.candidate_pairs} pairs checked · ${r.pending} left`;
+  const resolved = r.candidate_pairs - r.pending - r.needs_review;
+  $("progress").value = r.candidate_pairs ? resolved : 1;
+  $("pair-progress").textContent = [
+    `${r.agent_resolved_pairs} pairs decided by agent`,
+    r.needs_review ? `${r.needs_review} awaiting your decision` : "",
+    r.pending ? `${r.pending} awaiting review` : "",
+    `${resolved} of ${r.candidate_pairs} resolved`
+  ].filter(Boolean).join(" · ");
   const timing = state.review_timing;
   const timingLine = $("agent-timing");
   timingLine.hidden = !state.agent_running && !timing?.elapsed_seconds;
@@ -239,8 +247,8 @@ function render() {
   downloads.replaceChildren();
   if (state.export) {
     const summary = state.export.summary;
-    if (summary.dropped_questions === undefined) {
-      downloads.append(node("p", "Click Preview results again to generate both files."));
+    if (!state.export.files) {
+      downloads.append(node("p", "Click Preview results again to generate the downloads."));
       return;
     }
     if (summary.review_metrics) {
@@ -267,8 +275,10 @@ function render() {
     } else {
       downloads.append(node("p", "Click Preview results again to generate the review breakdown.", "sub"));
     }
+    const kept = baseline && !summary.complete ? "provisionally kept" : "unique";
+    const held = !baseline && summary.held_questions ? ` + ${summary.held_questions} held for review` : "";
     downloads.append(node("h3", "Question export"),
-      node("p", `${summary.retained_questions} ${summary.complete ? "unique" : "provisionally kept"} + ${summary.dropped_questions} dropped = ${summary.input_questions} original questions`));
+      node("p", `${summary.retained_questions} ${kept} + ${summary.dropped_questions} dropped${held} = ${summary.input_questions} original questions`));
     if (summary.previously_excluded_questions) {
       downloads.append(node("p",
         `${summary.proposed_archives} newly dropped in this review · ${summary.previously_excluded_questions} already excluded before the scan`,
@@ -310,20 +320,21 @@ function render() {
       downloads.append(list);
     }
     const links = node("div", undefined, "actions");
-    const files = [
-      ["unique.json", "Download unique.json"], ["drop.json", "Download drop.json"],
-      ...(baseline ? [
-      ["proposed_archives.json", "Download proposed archives"], ["unresolved.json", "Still to review"],
-      ["summary.json", "Summary"]
-    ] : [
-      ["import_ready.json", "Download ready questions"], ["duplicates.json", "Duplicates"],
-      ["unresolved.json", "Still to review"], ["already_in_bank.json", "Already in bank"], ["summary.json", "Summary"]
-    ])];
-    for (const [file, label] of files) {
-      if (file === "already_in_bank.json" && !state.scan.bank) continue;
-      const link = node("a", label, file === files[0][0] ? "button primary" : "button");
+    const labels = {
+      "results.zip": "Download all results (ZIP)",
+      "import_ready.json": "Download import file",
+      "duplicates.json": "Duplicates",
+      "unresolved.json": "Still to review",
+      "already_in_bank.json": "Already in bank",
+      "proposed_archives.json": "Download proposed archives",
+      "summary.json": "Summary"
+    };
+    for (const file of ["results.zip", ...Object.keys(state.export.files).filter(key => key !== "results.zip")]) {
+      const filename = state.export.files[file];
+      const link = node("a", labels[file] || `Download ${filename}`,
+        file === "results.zip" ? "button primary" : "button");
       link.href = "/api/download?" + new URLSearchParams({job: state.id, file});
-      link.download = file;
+      link.download = filename;
       links.append(link);
     }
     downloads.append(links);
@@ -451,13 +462,18 @@ async function refresh() {
   }
 }
 
+async function readUpload(file) {
+  return new TextDecoder("utf-8", {ignoreBOM: true, fatal: true}).decode(await file.arrayBuffer());
+}
+
 $("files-form").addEventListener("submit", event => {
   event.preventDefault();
   attempt(async () => {
     const source = $("source").files[0];
     const bank = $("bank").files[0];
     state = await api("start", {
-      mode, source: source ? await source.text() : "", bank: bank ? await bank.text() : "",
+      mode, source: source ? await readUpload(source) : "",
+      source_name: source?.name, bank: bank ? await readUpload(bank) : "", bank_name: bank?.name,
       subject: $("subject").value, database: $("database").value, use_mongo: $("live").checked
     });
     queue = "pending";
@@ -503,7 +519,7 @@ $("previous").onclick = () => moveDispute(-1);
 $("next").onclick = () => moveDispute(1);
 $("export").onclick = () => attempt(async () => {
   const original = $("original-bank").files[0];
-  state = await api("export", {job: state.id, original_bank: original ? await original.text() : undefined});
+  state = await api("export", {job: state.id, original_bank: original ? await readUpload(original) : undefined, original_bank_name: original?.name});
   render();
 });
 $("new").onclick = () => {
