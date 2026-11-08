@@ -82,6 +82,7 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
 
   <section id="review" class="panel" aria-labelledby="review-title" hidden>
     <div class="row"><h2 id="review-title" tabindex="-1">Review matches</h2><button id="new" type="button">Start another batch</button></div>
+    <p class="sub" id="dispute-summary"></p>
     <div class="stats" id="stats"></div>
     <p id="pair-progress" class="sub"></p>
     <progress id="progress" max="1" value="0" aria-label="Pairs reviewed"></progress>
@@ -198,7 +199,9 @@ function render() {
   if (!ready) return;
   const r = state.review;
   const baseline = state.mode === "baseline";
-  $("review-title").textContent = baseline ? "Review existing bank" : "Review new questions";
+  const disputes = r.open_disputes === 1 ? "dispute" : "disputes";
+  $("review-title").textContent = `${r.open_disputes} ${disputes} to review`;
+  $("dispute-summary").textContent = `${state.scan.input_questions} ${baseline ? "bank" : "uploaded"} questions scanned · ${r.candidate_pairs} candidate pairs found`;
   $("results-note").textContent = baseline
     ? "The ZIP includes the retained and dropped bank records and the unresolved review report."
     : "Use the _import_ready.json file inside the ZIP to import ready questions. Pending questions are listed in _unresolved.json.";
@@ -213,8 +216,8 @@ function render() {
     $("pair-status").textContent = "";
   }
   $("stats").replaceChildren(...[
-    ["To review", r.pending], ["Recorded duplicate verdicts", r.recorded_duplicate_verdicts ?? r.duplicates],
-    ["Recorded different verdicts", r.recorded_distinct_verdicts ?? r.distinct], ["Needs your decision", r.needs_review]
+    ["Pairs awaiting review", r.pending], ["Recorded duplicate verdicts", r.recorded_duplicate_verdicts ?? r.duplicates],
+    ["Recorded different verdicts", r.recorded_distinct_verdicts ?? r.distinct], ["Pairs awaiting your decision", r.needs_review]
   ].map(([label, count]) => {
     const item = node("div", undefined, "stat");
     item.append(node("strong", count), label);
@@ -227,7 +230,7 @@ function render() {
     `${r.agent_resolved_pairs} pairs decided by agent`,
     r.needs_review ? `${r.needs_review} awaiting your decision` : "",
     r.pending ? `${r.pending} awaiting review` : "",
-    `${resolved} of ${r.candidate_pairs} resolved`
+    `${resolved} of ${r.candidate_pairs} pairs resolved`
   ].filter(Boolean).join(" · ");
   const timing = state.review_timing;
   const timingLine = $("agent-timing");

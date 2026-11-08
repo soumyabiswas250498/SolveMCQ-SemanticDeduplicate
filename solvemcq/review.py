@@ -160,6 +160,10 @@ class ReviewJob:
             "job_id": self.job_id,
             "batch_id": self.report.batch_id,
             "candidate_pairs": total,
+            "open_disputes": sum(
+                group["status"] in ("pending", "needs_review")
+                for group in self.groups(decisions, selections).values()
+            ),
             "agent_resolved_pairs": metrics["agent_resolved_pairs"],
             "pending": total - sum(counts.values()) - len(covered),
             "duplicates": counts["duplicate"],

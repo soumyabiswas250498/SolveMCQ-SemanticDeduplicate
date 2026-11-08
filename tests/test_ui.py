@@ -235,6 +235,7 @@ class BrowserWorkflowTest(unittest.TestCase):
             job_id = state["id"]
             groups = workflow.dispute_groups(job_id)
             self.assertEqual(sorted(item["size"] for item in groups), [2, 3])
+            self.assertEqual(state["review"]["open_disputes"], 2)
             group_id = next(item["id"] for item in groups if item["size"] == 3)
             group = workflow.dispute_groups(job_id, group_id)
             keep = [item["question_id"] for item in group["questions"] if item["mongo_id"] in {"1", "3"}]
@@ -250,6 +251,7 @@ class BrowserWorkflowTest(unittest.TestCase):
                 "group": group_id, "members": group["members"], "keep": keep, "reason": "Two distinct facts",
             })
             self.assertEqual(state["review"]["resolved_by_selection"], 3)
+            self.assertEqual(state["review"]["open_disputes"], 1)
             self.assertEqual(state["review"]["pending"], 1)
             workflow = LocalWorkflow(root)
             saved = workflow.dispute_groups(job_id, group_id)
