@@ -127,7 +127,7 @@ progress{width:100%;height:9px;display:block;margin:12px 0;accent-color:var(--bl
 
   <section id="results" class="panel" aria-labelledby="results-title" hidden>
     <h2 id="results-title">Download results</h2>
-    <p id="results-note" class="sub">Questions still under review and questions already in your bank are held out of the ready file.</p>
+    <p id="results-note" class="sub">The ZIP includes the original file and all results.</p>
     <label id="original-bank-label" hidden>Original bank export
       <small>Choose your original bank JSON once to include all fields from this older review.</small>
       <input id="original-bank" type="file" accept=".json,application/json">
@@ -200,8 +200,8 @@ function render() {
   const baseline = state.mode === "baseline";
   $("review-title").textContent = baseline ? "Review existing bank" : "Review new questions";
   $("results-note").textContent = baseline
-    ? "The retained and dropped files split the original bank. Check Still to review for unresolved decisions."
-    : "Use Download import file for ready questions. Pending questions appear in Still to review.";
+    ? "The ZIP includes the retained and dropped bank records and the unresolved review report."
+    : "Use the _import_ready.json file inside the ZIP to import ready questions. Pending questions are listed in _unresolved.json.";
   $("original-bank-label").hidden = !baseline || !!state.bank_snapshot_full;
   $("review-list").hidden = $("review-workspace").hidden = !manual || !!state.agent_running;
   $("manual").hidden = !!state.agent_running;
@@ -247,7 +247,7 @@ function render() {
   downloads.replaceChildren();
   if (state.export) {
     const summary = state.export.summary;
-    if (!state.export.files) {
+    if (!state.export.files?.["results.zip"]) {
       downloads.append(node("p", "Click Preview results again to generate the downloads."));
       return;
     }
@@ -320,23 +320,10 @@ function render() {
       downloads.append(list);
     }
     const links = node("div", undefined, "actions");
-    const labels = {
-      "results.zip": "Download all results (ZIP)",
-      "import_ready.json": "Download import file",
-      "duplicates.json": "Duplicates",
-      "unresolved.json": "Still to review",
-      "already_in_bank.json": "Already in bank",
-      "proposed_archives.json": "Download proposed archives",
-      "summary.json": "Summary"
-    };
-    for (const file of ["results.zip", ...Object.keys(state.export.files).filter(key => key !== "results.zip")]) {
-      const filename = state.export.files[file];
-      const link = node("a", labels[file] || `Download ${filename}`,
-        file === "results.zip" ? "button primary" : "button");
-      link.href = "/api/download?" + new URLSearchParams({job: state.id, file});
-      link.download = filename;
-      links.append(link);
-    }
+    const zip = node("a", "Download all results (ZIP)", "button primary");
+    zip.href = "/api/download?" + new URLSearchParams({job: state.id, file: "results.zip"});
+    zip.download = state.export.files["results.zip"];
+    links.append(zip);
     downloads.append(links);
   }
 }
