@@ -4,4 +4,6 @@ __pycache__/
 build/
 dist/
 .solvemcq/
+input/
 output/
+sample-input.json
